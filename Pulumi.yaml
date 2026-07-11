@@ -1,0 +1,10 @@
+name: pulumi-playground-k8s
+description: A Pulumi playground for deploying PaaS-style services to Kubernetes clusters.
+runtime:
+  name: python
+  options:
+    virtualenv: .venv
+config:
+  pulumi:tags:
+    value:
+      pulumi:template: kubernetes-python

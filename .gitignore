@@ -1,0 +1,15 @@
+node_modules/
+.venv/
+.uv-cache/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.DS_Store
+.env
+.env.*
+.pytest_cache/
+.coverage
+htmlcov/
+.pulumi/
+dist/
+*.log

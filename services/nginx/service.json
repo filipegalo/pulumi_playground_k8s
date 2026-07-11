@@ -1,0 +1,7 @@
+{
+  "name": "nginx",
+  "image": "nginx:1.27-alpine",
+  "targetClusters": [
+    "local"
+  ]
+}

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+codex_hook="${HOME}/.codex/git-hooks/pre-commit"
+
+if [[ -x "${codex_hook}" ]]; then
+  "${codex_hook}" "$@"
+fi
+
+export UV_CACHE_DIR="${UV_CACHE_DIR:-.uv-cache}"
+export PYTHONPATH="${PYTHONPATH:-.}"
+
+uv run pre-commit run --hook-stage pre-commit "$@"

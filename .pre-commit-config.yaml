@@ -1,0 +1,26 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-yaml
+      - id: check-toml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-added-large-files
+      - id: check-merge-conflict
+
+  - repo: local
+    hooks:
+      - id: compile-python
+        name: compile python
+        entry: make compile
+        language: system
+        pass_filenames: false
+        types: [python]
+
+      - id: pulumi-mock-tests-coverage
+        name: pulumi mock tests with 100 percent coverage
+        entry: make coverage
+        language: system
+        pass_filenames: false
+        files: ^(paas_platform/|tests/|__main__\.py|pyproject\.toml|uv\.lock)
