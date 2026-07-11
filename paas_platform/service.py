@@ -33,6 +33,21 @@ SERVICE_DEFAULTS = {
         "initialDelaySeconds": 3,
         "periodSeconds": 5,
     },
+    "networkPolicy": {
+        "enabled": False,
+        "ingress": {
+            "fromServices": [],
+            "fromSameNamespace": False,
+            "fromNamespaces": [],
+            "ports": [],
+        },
+        "egress": {
+            "allowExternal": True,
+            "toServices": [],
+            "toNamespaces": [],
+            "ports": [],
+        },
+    },
 }
 
 
@@ -133,6 +148,22 @@ def _deploy_to_cluster(service: dict[str, Any], cluster: dict[str, Any]) -> dict
             resource_names,
         )
 
+    network_policy_resource = None
+    network_policy_config = service["networkPolicy"]
+    if network_policy_config["enabled"]:
+        network_policy_resource = _create_network_policy(
+            service_name,
+            cluster_name,
+            namespace,
+            deployment,
+            selector_labels,
+            metadata_labels,
+            provider,
+            service,
+            network_policy_config,
+            resource_names,
+        )
+
     return {
         "cluster": cluster_name,
         "context": context,
@@ -141,6 +172,9 @@ def _deploy_to_cluster(service: dict[str, Any], cluster: dict[str, Any]) -> dict
         "deployment": deployment.metadata["name"],
         "service": service_resource.metadata["name"] if service_resource else None,
         "ingress": ingress_resource.metadata["name"] if ingress_resource else None,
+        "networkPolicy": (
+            network_policy_resource.metadata["name"] if network_policy_resource else None
+        ),
     }
 
 
@@ -229,6 +263,174 @@ def _create_ingress(
     )
 
 
+def _create_network_policy(
+    service_name: str,
+    cluster_name: str,
+    namespace: k8s.core.v1.Namespace,
+    deployment: k8s.apps.v1.Deployment,
+    selector_labels: dict[str, str],
+    metadata_labels: dict[str, str],
+    provider: k8s.Provider,
+    service: dict[str, Any],
+    network_policy_config: dict[str, Any],
+    resource_names: dict[str, str],
+) -> k8s.networking.v1.NetworkPolicy:
+    spec = _network_policy_spec(service, network_policy_config, selector_labels)
+
+    return k8s.networking.v1.NetworkPolicy(
+        resource_names.get("networkPolicy", f"{service_name}-{cluster_name}-network-policy"),
+        metadata={
+            "name": service_name,
+            "namespace": namespace.metadata["name"],
+            "labels": metadata_labels,
+        },
+        spec=spec,
+        opts=pulumi.ResourceOptions(provider=provider, depends_on=[deployment]),
+    )
+
+
+def _network_policy_spec(
+    service: dict[str, Any],
+    network_policy_config: dict[str, Any],
+    selector_labels: dict[str, str],
+) -> dict[str, Any]:
+    ingress_config = network_policy_config["ingress"]
+    egress_config = network_policy_config["egress"]
+    ingress_rules = _network_policy_ingress_rules(service, ingress_config)
+    egress_rules = _network_policy_egress_rules(egress_config)
+    policy_types = []
+
+    spec: dict[str, Any] = {
+        "podSelector": {
+            "matchLabels": selector_labels,
+        },
+    }
+
+    if ingress_rules is not None:
+        policy_types.append("Ingress")
+        spec["ingress"] = ingress_rules
+
+    if egress_rules is not None:
+        policy_types.append("Egress")
+        spec["egress"] = egress_rules
+
+    if policy_types:
+        spec["policyTypes"] = policy_types
+
+    return spec
+
+
+def _network_policy_ingress_rules(
+    service: dict[str, Any],
+    ingress_config: dict[str, Any],
+) -> list[dict[str, Any]] | None:
+    peers = _network_policy_ingress_peers(ingress_config)
+    if not peers:
+        return []
+
+    rule: dict[str, Any] = {"from": peers}
+    ports = _network_policy_ports(ingress_config.get("ports"), service.get("port", 80))
+    if ports:
+        rule["ports"] = ports
+
+    return [rule]
+
+
+def _network_policy_egress_rules(
+    egress_config: dict[str, Any],
+) -> list[dict[str, Any]] | None:
+    if egress_config.get("allowExternal", True):
+        return None
+
+    peers = _network_policy_egress_peers(egress_config)
+    if not peers:
+        return []
+
+    rule: dict[str, Any] = {"to": peers}
+    ports = _network_policy_ports(egress_config.get("ports"))
+    if ports:
+        rule["ports"] = ports
+
+    return [rule]
+
+
+def _network_policy_ingress_peers(ingress_config: dict[str, Any]) -> list[dict[str, Any]]:
+    peers: list[dict[str, Any]] = []
+
+    if ingress_config.get("fromSameNamespace"):
+        peers.append({"podSelector": {}})
+
+    for namespace_name in ingress_config.get("fromNamespaces", []):
+        peers.append(
+            {
+                "namespaceSelector": {
+                    "matchLabels": {
+                        "kubernetes.io/metadata.name": namespace_name,
+                    },
+                },
+            }
+        )
+
+    for source_service in ingress_config.get("fromServices", []):
+        peers.append(
+            {
+                "podSelector": {
+                    "matchLabels": {
+                        "app.kubernetes.io/name": source_service,
+                    },
+                },
+            }
+        )
+
+    return peers
+
+
+def _network_policy_egress_peers(egress_config: dict[str, Any]) -> list[dict[str, Any]]:
+    peers: list[dict[str, Any]] = []
+
+    for namespace_name in egress_config.get("toNamespaces", []):
+        peers.append(
+            {
+                "namespaceSelector": {
+                    "matchLabels": {
+                        "kubernetes.io/metadata.name": namespace_name,
+                    },
+                },
+            }
+        )
+
+    for target_service in egress_config.get("toServices", []):
+        peers.append(
+            {
+                "podSelector": {
+                    "matchLabels": {
+                        "app.kubernetes.io/name": target_service,
+                    },
+                },
+            }
+        )
+
+    return peers
+
+
+def _network_policy_ports(
+    configured_ports: list[dict[str, Any]] | None,
+    default_port: int | None = None,
+) -> list[dict[str, Any]]:
+    if configured_ports:
+        return configured_ports
+
+    if default_port is None:
+        return []
+
+    return [
+        {
+            "protocol": "TCP",
+            "port": default_port,
+        },
+    ]
+
+
 def _container_spec(service: dict[str, Any], cluster: dict[str, Any]) -> dict[str, Any]:
     container_port = service["containerPort"]
     env = service.get("env", {})
@@ -300,6 +502,18 @@ def _service_config(service: dict[str, Any]) -> dict[str, Any]:
         "readinessProbe": {
             **SERVICE_DEFAULTS["readinessProbe"],
             **service.get("readinessProbe", {}),
+        },
+        "networkPolicy": {
+            **SERVICE_DEFAULTS["networkPolicy"],
+            **service.get("networkPolicy", {}),
+            "ingress": {
+                **SERVICE_DEFAULTS["networkPolicy"]["ingress"],
+                **service.get("networkPolicy", {}).get("ingress", {}),
+            },
+            "egress": {
+                **SERVICE_DEFAULTS["networkPolicy"]["egress"],
+                **service.get("networkPolicy", {}).get("egress", {}),
+            },
         },
     }
 

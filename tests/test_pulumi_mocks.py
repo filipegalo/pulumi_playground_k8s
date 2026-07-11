@@ -5,7 +5,12 @@ import pulumi
 import pytest
 from pulumi.runtime import MockCallArgs, MockResourceArgs, Mocks, set_mocks
 
-from paas_platform.service import _readiness_probe, _target_config, deploy_service
+from paas_platform.service import (
+    _network_policy_ports,
+    _readiness_probe,
+    _target_config,
+    deploy_service,
+)
 from services import SERVICES
 
 asyncio.set_event_loop(asyncio.new_event_loop())
@@ -128,6 +133,7 @@ def test_service_defaults_create_namespace_deployment_and_service():
         assert len(deployments) == 1
         assert len(services) == 1
         assert len(ingresses) == 0
+        assert len(_resources_by_type("kubernetes:networking.k8s.io/v1:NetworkPolicy")) == 0
 
         namespace_inputs = namespaces[0]["inputs"]
         assert namespace_inputs["metadata"]["name"] == "api-dev"
@@ -220,3 +226,207 @@ def test_service_overrides_port_replicas_ingress_and_namespace():
         outputs[0]["service"],
         outputs[0]["ingress"],
     ).apply(check_outputs)
+
+
+@pulumi.runtime.test
+def test_network_policy_allows_external_egress_by_default():
+    outputs = deploy_service(
+        {
+            "name": "api",
+            "image": "ghcr.io/example/api:latest",
+            "port": 8080,
+            "networkPolicy": {
+                "enabled": True,
+                "ingress": {
+                    "fromSameNamespace": True,
+                    "fromServices": ["worker"],
+                    "fromNamespaces": ["ingress-nginx"],
+                },
+            },
+            "targetClusters": ["local"],
+        }
+    )
+
+    def check_outputs(args: list[Any]) -> None:
+        network_policy = args[0]
+
+        assert network_policy == "api"
+
+        policies = [
+            resource
+            for resource in _resources_by_type("kubernetes:networking.k8s.io/v1:NetworkPolicy")
+            if resource["name"] == "api-local-network-policy"
+        ]
+
+        assert len(policies) == 1
+
+        policy_inputs = policies[0]["inputs"]
+        assert policy_inputs["metadata"]["namespace"] == "api-dev"
+        assert policy_inputs["spec"]["policyTypes"] == ["Ingress"]
+        assert "egress" not in policy_inputs["spec"]
+
+        ingress_rule = policy_inputs["spec"]["ingress"][0]
+        assert ingress_rule["ports"] == [{"protocol": "TCP", "port": 8080}]
+        assert ingress_rule["from"] == [
+            {"podSelector": {}},
+            {
+                "namespaceSelector": {
+                    "matchLabels": {
+                        "kubernetes.io/metadata.name": "ingress-nginx",
+                    },
+                },
+            },
+            {
+                "podSelector": {
+                    "matchLabels": {
+                        "app.kubernetes.io/name": "worker",
+                    },
+                },
+            },
+        ]
+
+    return pulumi.Output.all(outputs[0]["networkPolicy"]).apply(check_outputs)
+
+
+@pulumi.runtime.test
+def test_network_policy_can_restrict_egress():
+    outputs = deploy_service(
+        {
+            "name": "worker",
+            "image": "ghcr.io/example/worker:latest",
+            "networkPolicy": {
+                "enabled": True,
+                "ingress": {
+                    "fromServices": ["api"],
+                },
+                "egress": {
+                    "allowExternal": False,
+                    "toServices": ["redis"],
+                    "toNamespaces": ["monitoring"],
+                    "ports": [
+                        {
+                            "protocol": "TCP",
+                            "port": 6379,
+                        },
+                    ],
+                },
+            },
+            "targetClusters": ["local"],
+        }
+    )
+
+    def check_outputs(args: list[Any]) -> None:
+        network_policy = args[0]
+
+        assert network_policy == "worker"
+
+        policies = [
+            resource
+            for resource in _resources_by_type("kubernetes:networking.k8s.io/v1:NetworkPolicy")
+            if resource["name"] == "worker-local-network-policy"
+        ]
+
+        assert len(policies) == 1
+
+        policy_inputs = policies[0]["inputs"]
+        assert policy_inputs["spec"]["policyTypes"] == ["Ingress", "Egress"]
+
+        ingress_rule = policy_inputs["spec"]["ingress"][0]
+        assert ingress_rule["ports"] == [{"protocol": "TCP", "port": 80}]
+        assert ingress_rule["from"] == [
+            {
+                "podSelector": {
+                    "matchLabels": {
+                        "app.kubernetes.io/name": "api",
+                    },
+                },
+            },
+        ]
+
+        egress_rule = policy_inputs["spec"]["egress"][0]
+        assert egress_rule["ports"] == [{"protocol": "TCP", "port": 6379}]
+        assert egress_rule["to"] == [
+            {
+                "namespaceSelector": {
+                    "matchLabels": {
+                        "kubernetes.io/metadata.name": "monitoring",
+                    },
+                },
+            },
+            {
+                "podSelector": {
+                    "matchLabels": {
+                        "app.kubernetes.io/name": "redis",
+                    },
+                },
+            },
+        ]
+
+    return pulumi.Output.all(outputs[0]["networkPolicy"]).apply(check_outputs)
+
+
+@pulumi.runtime.test
+def test_network_policy_without_ingress_peers_denies_ingress():
+    outputs = deploy_service(
+        {
+            "name": "isolated",
+            "image": "ghcr.io/example/isolated:latest",
+            "networkPolicy": {
+                "enabled": True,
+            },
+            "targetClusters": ["local"],
+        }
+    )
+
+    def check_outputs(args: list[Any]) -> None:
+        network_policy = args[0]
+
+        assert network_policy == "isolated"
+
+        policies = [
+            resource
+            for resource in _resources_by_type("kubernetes:networking.k8s.io/v1:NetworkPolicy")
+            if resource["name"] == "isolated-local-network-policy"
+        ]
+
+        assert len(policies) == 1
+        assert policies[0]["inputs"]["spec"]["ingress"] == []
+        assert "egress" not in policies[0]["inputs"]["spec"]
+
+    return pulumi.Output.all(outputs[0]["networkPolicy"]).apply(check_outputs)
+
+
+@pulumi.runtime.test
+def test_network_policy_restricted_egress_without_peers_denies_egress():
+    outputs = deploy_service(
+        {
+            "name": "locked-down",
+            "image": "ghcr.io/example/locked-down:latest",
+            "networkPolicy": {
+                "enabled": True,
+                "egress": {
+                    "allowExternal": False,
+                },
+            },
+            "targetClusters": ["local"],
+        }
+    )
+
+    def check_outputs(args: list[Any]) -> None:
+        network_policy = args[0]
+
+        assert network_policy == "locked-down"
+
+        policies = [
+            resource
+            for resource in _resources_by_type("kubernetes:networking.k8s.io/v1:NetworkPolicy")
+            if resource["name"] == "locked-down-local-network-policy"
+        ]
+
+        assert len(policies) == 1
+        assert policies[0]["inputs"]["spec"]["egress"] == []
+
+    return pulumi.Output.all(outputs[0]["networkPolicy"]).apply(check_outputs)
+
+def test_network_policy_ports_without_config_or_default_returns_empty():
+    assert _network_policy_ports(None) == []
