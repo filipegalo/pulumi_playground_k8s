@@ -2,13 +2,13 @@
 
 This is a tiny Pulumi-powered PaaS baseline for learning how to deploy developer services to one or more Kubernetes clusters.
 
-The example service deploys:
+The example services deploy:
 
 - a namespace named from the service and cluster environment, such as `nginx-dev`
-- an NGINX Deployment
+- simple Deployments for `nginx`, `api`, and `worker`
 - optional ConfigMap and Secret resources when a service declares runtime config
 - a ClusterIP Service by default
-- no Ingress by default
+- optional Ingress when a service opts in
 
 ## Prerequisites
 
@@ -70,7 +70,7 @@ make coverage-html
 
 This repository already has a `dev` stack initialized for local learning. The passphrase above is only for this disposable local lab stack; use a real secret-management approach for anything shared or production-like.
 
-Inspect the result:
+Inspect the default NGINX result:
 
 ```bash
 kubectl -n nginx-dev get all
@@ -86,6 +86,8 @@ make port-forward
 
 Then open `http://localhost:8080`.
 
+The API example also exposes an Ingress declaration for `api.localhost` when your local cluster has an ingress controller installed.
+
 ## Mental Model
 
 - `Pulumi.yaml` defines the project.
@@ -99,6 +101,12 @@ Then open `http://localhost:8080`.
 - Pulumi state remembers what it created so it can update or destroy it later.
 
 ## Adding A Service
+
+The checked-in examples live under `services/`:
+
+- `services/nginx/service.json` keeps the original NGINX service with env vars, Pulumi-backed secrets, and a default ClusterIP Service.
+- `services/api/service.json` runs `httpd:2.4-alpine`, exposes service port `8080` to container port `80`, sets simple env vars, creates a ConfigMap from non-secret config, enables Ingress at `api.localhost`, skips Pulumi's load-balancer await for local kind, and includes a disabled `future-cluster` target to show how a declaration can prepare for another cluster without deploying there yet.
+- `services/worker/service.json` runs `registry.k8s.io/pause:3.10` as a deployment-only workload with its Kubernetes Service disabled and readiness probe disabled.
 
 Create `services/my_app/service.json`:
 
@@ -125,12 +133,41 @@ Most settings are service defaults in `paas_platform/service.py`: port `80`, rep
 ```json
 {
   "name": "api",
-  "image": "ghcr.io/example/api:latest",
+  "image": "httpd:2.4-alpine",
   "port": 8080,
+  "containerPort": 80,
   "replicas": 2,
+  "env": {
+    "APP_ENV": "dev"
+  },
   "ingress": {
     "enabled": true,
-    "host": "api.localhost"
+    "host": "api.localhost",
+    "annotations": {
+      "pulumi.com/skipAwait": "true"
+    }
+  },
+  "targetClusters": [
+    "local",
+    {
+      "name": "future-cluster",
+      "enabled": false
+    }
+  ]
+}
+```
+
+Deployment-only workloads can disable the Kubernetes Service:
+
+```json
+{
+  "name": "worker",
+  "image": "registry.k8s.io/pause:3.10",
+  "service": {
+    "enabled": false
+  },
+  "readinessProbe": {
+    "enabled": false
   },
   "targetClusters": ["local"]
 }
@@ -141,7 +178,7 @@ Services can also expose runtime config as environment variables. Non-secret val
 ```json
 {
   "name": "api",
-  "image": "ghcr.io/example/api:latest",
+  "image": "httpd:2.4-alpine",
   "config": {
     "LOG_LEVEL": "info"
   },

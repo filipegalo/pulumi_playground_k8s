@@ -1,0 +1,17 @@
+{
+  "name": "worker",
+  "image": "registry.k8s.io/pause:3.10",
+  "env": {
+    "APP_ENV": "dev",
+    "SERVICE_ROLE": "worker"
+  },
+  "service": {
+    "enabled": false
+  },
+  "readinessProbe": {
+    "enabled": false
+  },
+  "targetClusters": [
+    "local"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "name": "api",
+  "image": "httpd:2.4-alpine",
+  "port": 8080,
+  "containerPort": 80,
+  "replicas": 2,
+  "env": {
+    "APP_ENV": "dev",
+    "SERVICE_ROLE": "api"
+  },
+  "config": {
+    "LOG_LEVEL": "info",
+    "FEATURE_FLAG": "platform-examples"
+  },
+  "ingress": {
+    "enabled": true,
+    "host": "api.localhost",
+    "annotations": {
+      "pulumi.com/skipAwait": "true"
+    }
+  },
+  "targetClusters": [
+    "local",
+    {
+      "name": "future-cluster",
+      "enabled": false
+    }
+  ]
+}

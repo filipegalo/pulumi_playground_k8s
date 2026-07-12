@@ -60,10 +60,37 @@ def _resources_by_type(resource_type: str) -> list[dict[str, Any]]:
     ]
 
 
-def test_service_registry_loads_nginx_service():
+def _service_by_name(service_name: str) -> dict[str, Any]:
+    return next(service for service in SERVICES if service["name"] == service_name)
+
+
+def test_service_registry_loads_example_services():
+    assert [service["name"] for service in SERVICES] == ["api", "nginx", "worker"]
+
+    api_service = _service_by_name("api")
     nginx_service = next(service for service in SERVICES if service["name"] == "nginx")
+    worker_service = _service_by_name("worker")
+
+    assert api_service["image"] == "httpd:2.4-alpine"
+    assert api_service["port"] == 8080
+    assert api_service["containerPort"] == 80
+    assert api_service["ingress"]["enabled"] is True
+    assert api_service["ingress"]["annotations"] == {
+        "pulumi.com/skipAwait": "true",
+    }
+    assert api_service["targetClusters"] == [
+        "local",
+        {
+            "name": "future-cluster",
+            "enabled": False,
+        },
+    ]
+
     assert nginx_service["image"] == "nginx:1.27-alpine"
     assert nginx_service["targetClusters"] == ["local"]
+
+    assert worker_service["image"] == "registry.k8s.io/pause:3.10"
+    assert worker_service["service"]["enabled"] is False
 
 
 def test_disabled_target_cluster_is_skipped():
@@ -113,8 +140,8 @@ def test_ingress_requires_service():
 def test_service_defaults_create_namespace_deployment_and_service():
     outputs = deploy_service(
         {
-            "name": "api",
-            "image": "ghcr.io/example/api:latest",
+            "name": "default-api",
+            "image": "ghcr.io/example/default-api:latest",
             "targetClusters": ["local"],
         }
     )
@@ -122,26 +149,30 @@ def test_service_defaults_create_namespace_deployment_and_service():
     def check_outputs(args: list[Any]) -> None:
         namespace, deployment, service = args
 
-        assert namespace == "api-dev"
-        assert deployment == "api"
-        assert service == "api"
+        assert namespace == "default-api-dev"
+        assert deployment == "default-api"
+        assert service == "default-api"
 
         namespaces = [
             resource
             for resource in _resources_by_type("kubernetes:core/v1:Namespace")
-            if resource["name"] == "api-local-namespace"
+            if resource["name"] == "default-api-local-namespace"
         ]
         deployments = [
             resource
             for resource in _resources_by_type("kubernetes:apps/v1:Deployment")
-            if resource["name"] == "api-local-deployment"
+            if resource["name"] == "default-api-local-deployment"
         ]
         services = [
             resource
             for resource in _resources_by_type("kubernetes:core/v1:Service")
-            if resource["name"] == "api-local-service"
+            if resource["name"] == "default-api-local-service"
         ]
-        ingresses = _resources_by_type("kubernetes:networking.k8s.io/v1:Ingress")
+        ingresses = [
+            resource
+            for resource in _resources_by_type("kubernetes:networking.k8s.io/v1:Ingress")
+            if resource["name"] == "default-api-local-ingress"
+        ]
 
         assert len(namespaces) == 1
         assert len(deployments) == 1
@@ -152,14 +183,14 @@ def test_service_defaults_create_namespace_deployment_and_service():
         assert len(_resources_by_type("kubernetes:networking.k8s.io/v1:NetworkPolicy")) == 0
 
         namespace_inputs = namespaces[0]["inputs"]
-        assert namespace_inputs["metadata"]["name"] == "api-dev"
+        assert namespace_inputs["metadata"]["name"] == "default-api-dev"
         assert namespace_inputs["metadata"]["labels"]["paas.openai.com/environment"] == "dev"
 
         deployment_inputs = deployments[0]["inputs"]
         container = deployment_inputs["spec"]["template"]["spec"]["containers"][0]
-        assert deployment_inputs["metadata"]["namespace"] == "api-dev"
+        assert deployment_inputs["metadata"]["namespace"] == "default-api-dev"
         assert deployment_inputs["spec"]["replicas"] == 1
-        assert container["image"] == "ghcr.io/example/api:latest"
+        assert container["image"] == "ghcr.io/example/default-api:latest"
         assert container["ports"] == [{"containerPort": 80}]
         assert container["readinessProbe"]["httpGet"] == {"path": "/", "port": 80}
         assert "envFrom" not in container
@@ -172,6 +203,234 @@ def test_service_defaults_create_namespace_deployment_and_service():
         outputs[0]["namespace"],
         outputs[0]["deployment"],
         outputs[0]["service"],
+    ).apply(check_outputs)
+
+
+@pulumi.runtime.test
+def test_discovered_api_service_creates_config_ingress_and_skips_disabled_target():
+    outputs = deploy_service(_service_by_name("api"))
+
+    def check_outputs(args: list[Any]) -> None:
+        namespace, deployment, service, ingress, config_map = args
+
+        assert len(outputs) == 1
+        assert namespace == "api-dev"
+        assert deployment == "api"
+        assert service == "api"
+        assert ingress == "api"
+        assert config_map == "api"
+
+        deployments = [
+            resource
+            for resource in _resources_by_type("kubernetes:apps/v1:Deployment")
+            if resource["name"] == "api-local-deployment"
+        ]
+        services = [
+            resource
+            for resource in _resources_by_type("kubernetes:core/v1:Service")
+            if resource["name"] == "api-local-service"
+        ]
+        ingresses = [
+            resource
+            for resource in _resources_by_type("kubernetes:networking.k8s.io/v1:Ingress")
+            if resource["name"] == "api-local-ingress"
+        ]
+        config_maps = [
+            resource
+            for resource in _resources_by_type("kubernetes:core/v1:ConfigMap")
+            if resource["name"] == "api-local-config-map"
+        ]
+        future_deployments = [
+            resource
+            for resource in _resources_by_type("kubernetes:apps/v1:Deployment")
+            if resource["name"] == "api-future-cluster-deployment"
+        ]
+
+        assert len(deployments) == 1
+        assert len(services) == 1
+        assert len(ingresses) == 1
+        assert len(config_maps) == 1
+        assert len(future_deployments) == 0
+
+        deployment_inputs = deployments[0]["inputs"]
+        container = deployment_inputs["spec"]["template"]["spec"]["containers"][0]
+        assert deployment_inputs["spec"]["replicas"] == 2
+        assert container["image"] == "httpd:2.4-alpine"
+        assert container["ports"] == [{"containerPort": 80}]
+        assert container["env"] == [
+            {
+                "name": "APP_ENV",
+                "value": "dev",
+            },
+            {
+                "name": "SERVICE_ROLE",
+                "value": "api",
+            },
+        ]
+        assert container["envFrom"] == [
+            {
+                "configMapRef": {
+                    "name": "api",
+                },
+            },
+        ]
+
+        config_map_inputs = config_maps[0]["inputs"]
+        assert config_map_inputs["data"] == {
+            "LOG_LEVEL": "info",
+            "FEATURE_FLAG": "platform-examples",
+        }
+
+        service_inputs = services[0]["inputs"]
+        assert service_inputs["spec"]["ports"][0]["port"] == 8080
+        assert service_inputs["spec"]["ports"][0]["targetPort"] == 80
+
+        ingress_inputs = ingresses[0]["inputs"]
+        assert ingress_inputs["metadata"]["annotations"] == {
+            "pulumi.com/skipAwait": "true",
+        }
+        rule = ingress_inputs["spec"]["rules"][0]
+        backend = rule["http"]["paths"][0]["backend"]["service"]
+        assert rule["host"] == "api.localhost"
+        assert backend["name"] == "api"
+        assert backend["port"]["number"] == 8080
+
+    return pulumi.Output.all(
+        outputs[0]["namespace"],
+        outputs[0]["deployment"],
+        outputs[0]["service"],
+        outputs[0]["ingress"],
+        outputs[0]["configMap"],
+    ).apply(check_outputs)
+
+
+@pulumi.runtime.test
+def test_discovered_worker_service_creates_deployment_without_service():
+    outputs = deploy_service(_service_by_name("worker"))
+
+    def check_outputs(args: list[Any]) -> None:
+        namespace, deployment, service, ingress = args
+
+        assert namespace == "worker-dev"
+        assert deployment == "worker"
+        assert service is None
+        assert ingress is None
+
+        deployments = [
+            resource
+            for resource in _resources_by_type("kubernetes:apps/v1:Deployment")
+            if resource["name"] == "worker-local-deployment"
+        ]
+        services = [
+            resource
+            for resource in _resources_by_type("kubernetes:core/v1:Service")
+            if resource["name"] == "worker-local-service"
+        ]
+
+        assert len(deployments) == 1
+        assert len(services) == 0
+
+        container = deployments[0]["inputs"]["spec"]["template"]["spec"]["containers"][0]
+        assert container["image"] == "registry.k8s.io/pause:3.10"
+        assert container["env"] == [
+            {
+                "name": "APP_ENV",
+                "value": "dev",
+            },
+            {
+                "name": "SERVICE_ROLE",
+                "value": "worker",
+            },
+        ]
+        assert "readinessProbe" not in container
+
+    return pulumi.Output.all(
+        outputs[0]["namespace"],
+        outputs[0]["deployment"],
+        outputs[0]["service"],
+        outputs[0]["ingress"],
+    ).apply(check_outputs)
+
+
+@pulumi.runtime.test
+def test_service_can_target_future_cluster_with_cluster_overrides():
+    outputs = deploy_service(
+        {
+            "name": "multi-api",
+            "image": "httpd:2.4-alpine",
+            "containerPort": 80,
+            "port": 8080,
+            "config": {
+                "LOG_LEVEL": "info",
+            },
+            "targetClusters": [
+                "local",
+                {
+                    "name": "future-cluster",
+                    "replicas": 3,
+                    "env": {
+                        "APP_ENV": "staging",
+                    },
+                    "config": {
+                        "LOG_LEVEL": "debug",
+                    },
+                },
+            ],
+        }
+    )
+
+    def check_outputs(args: list[Any]) -> None:
+        local_namespace, future_namespace, future_deployment, future_config_map = args
+
+        assert local_namespace == "multi-api-dev"
+        assert future_namespace == "multi-api-staging"
+        assert future_deployment == "multi-api"
+        assert future_config_map == "multi-api"
+
+        future_namespaces = [
+            resource
+            for resource in _resources_by_type("kubernetes:core/v1:Namespace")
+            if resource["name"] == "multi-api-future-cluster-namespace"
+        ]
+        future_deployments = [
+            resource
+            for resource in _resources_by_type("kubernetes:apps/v1:Deployment")
+            if resource["name"] == "multi-api-future-cluster-deployment"
+        ]
+        future_config_maps = [
+            resource
+            for resource in _resources_by_type("kubernetes:core/v1:ConfigMap")
+            if resource["name"] == "multi-api-future-cluster-config-map"
+        ]
+
+        assert len(outputs) == 2
+        assert len(future_namespaces) == 1
+        assert len(future_deployments) == 1
+        assert len(future_config_maps) == 1
+
+        namespace_inputs = future_namespaces[0]["inputs"]
+        assert namespace_inputs["metadata"]["labels"]["paas.openai.com/environment"] == "staging"
+
+        deployment_inputs = future_deployments[0]["inputs"]
+        container = deployment_inputs["spec"]["template"]["spec"]["containers"][0]
+        assert deployment_inputs["metadata"]["namespace"] == "multi-api-staging"
+        assert deployment_inputs["spec"]["replicas"] == 3
+        assert container["env"] == [
+            {
+                "name": "APP_ENV",
+                "value": "staging",
+            },
+        ]
+
+        assert future_config_maps[0]["inputs"]["data"] == {
+            "LOG_LEVEL": "debug",
+        }
+
+    return pulumi.Output.all(
+        outputs[0]["namespace"],
+        outputs[1]["namespace"],
+        outputs[1]["deployment"],
+        outputs[1]["configMap"],
     ).apply(check_outputs)
 
 
@@ -214,7 +473,11 @@ def test_service_overrides_port_replicas_ingress_and_namespace():
             for resource in _resources_by_type("kubernetes:core/v1:Service")
             if resource["name"] == "web-local-service"
         ]
-        ingresses = _resources_by_type("kubernetes:networking.k8s.io/v1:Ingress")
+        ingresses = [
+            resource
+            for resource in _resources_by_type("kubernetes:networking.k8s.io/v1:Ingress")
+            if resource["name"] == "web-local-ingress"
+        ]
 
         assert len(deployments) == 1
         assert len(services) == 1
@@ -312,6 +575,7 @@ def test_env_from_references_config_map_and_secret_names():
             },
         },
     ]
+
 
 @pulumi.runtime.test
 def test_network_policy_allows_external_egress_by_default():
@@ -512,6 +776,7 @@ def test_network_policy_restricted_egress_without_peers_denies_egress():
         assert policies[0]["inputs"]["spec"]["egress"] == []
 
     return pulumi.Output.all(outputs[0]["networkPolicy"]).apply(check_outputs)
+
 
 def test_network_policy_ports_without_config_or_default_returns_empty():
     assert _network_policy_ports(None) == []
