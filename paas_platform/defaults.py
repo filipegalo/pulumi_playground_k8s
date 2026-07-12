@@ -1,3 +1,4 @@
+from copy import deepcopy
 from typing import Any
 
 
@@ -47,40 +48,95 @@ SERVICE_DEFAULTS = {
     "secrets": [],
 }
 
-
-def service_config(service: dict[str, Any]) -> dict[str, Any]:
-    config = {
-        **SERVICE_DEFAULTS,
-        **service,
+ENVIRONMENT_DEFAULTS = {
+    "dev": {
+        "replicas": 1,
         "service": {
-            **SERVICE_DEFAULTS["service"],
-            **service.get("service", {}),
-        },
-        "ingress": {
-            **SERVICE_DEFAULTS["ingress"],
-            **service.get("ingress", {}),
+            "type": "ClusterIP",
         },
         "resources": {
-            **SERVICE_DEFAULTS["resources"],
-            **service.get("resources", {}),
-        },
-        "readinessProbe": {
-            **SERVICE_DEFAULTS["readinessProbe"],
-            **service.get("readinessProbe", {}),
-        },
-        "networkPolicy": {
-            **SERVICE_DEFAULTS["networkPolicy"],
-            **service.get("networkPolicy", {}),
-            "ingress": {
-                **SERVICE_DEFAULTS["networkPolicy"]["ingress"],
-                **service.get("networkPolicy", {}).get("ingress", {}),
+            "requests": {
+                "cpu": "25m",
+                "memory": "32Mi",
             },
-            "egress": {
-                **SERVICE_DEFAULTS["networkPolicy"]["egress"],
-                **service.get("networkPolicy", {}).get("egress", {}),
+            "limits": {
+                "cpu": "100m",
+                "memory": "128Mi",
             },
         },
-    }
+    },
+    "staging": {
+        "replicas": 2,
+        "service": {
+            "type": "LoadBalancer",
+        },
+        "resources": {
+            "requests": {
+                "cpu": "50m",
+                "memory": "64Mi",
+            },
+            "limits": {
+                "cpu": "250m",
+                "memory": "256Mi",
+            },
+        },
+    },
+}
+
+TARGET_SERVICE_OVERRIDE_KEYS = frozenset(
+    [
+        "config",
+        "containerPort",
+        "env",
+        "image",
+        "ingress",
+        "networkPolicy",
+        "port",
+        "readinessProbe",
+        "replicas",
+        "resources",
+        "secrets",
+        "service",
+    ]
+)
+
+
+def service_config(
+    service: dict[str, Any],
+    environment: str | None = None,
+    target: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    config = deep_merge(
+        SERVICE_DEFAULTS,
+        ENVIRONMENT_DEFAULTS.get(environment, {}),
+        service,
+        target_service_overrides(target),
+    )
 
     config["containerPort"] = config.get("containerPort", config["port"])
     return config
+
+
+def target_service_overrides(target: dict[str, Any] | None) -> dict[str, Any]:
+    if target is None:
+        return {}
+
+    return {
+        key: value
+        for key, value in target.items()
+        if key in TARGET_SERVICE_OVERRIDE_KEYS
+    }
+
+
+def deep_merge(*configs: dict[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+
+    for config in configs:
+        for key, value in config.items():
+            if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                merged[key] = deep_merge(merged[key], value)
+                continue
+
+            merged[key] = deepcopy(value)
+
+    return merged

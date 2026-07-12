@@ -94,6 +94,7 @@ The API example also exposes an Ingress declaration for `api.localhost` when you
 - A stack is one instance of the project, like `dev`.
 - `__main__.py` invokes each service declaration.
 - `paas_platform/service.py` is the reusable PaaS deployment primitive.
+- `paas_platform/defaults.py` owns platform and per-environment service defaults.
 - `paas_platform/clusters.py` is the platform-owned cluster inventory.
 - `services/` contains developer-owned service declarations.
 - `pulumi preview` shows the diff.
@@ -128,7 +129,7 @@ Clusters are defined by the platform in `paas_platform/clusters.py`. A service s
 
 For example, `my-app` on a `dev` cluster becomes `my-app-dev`.
 
-Most settings are service defaults in `paas_platform/service.py`: port `80`, replicas `1`, ClusterIP service enabled, ingress disabled, readiness probe enabled, and small CPU/memory requests. Services only override them when needed:
+Most settings are platform defaults in `paas_platform/defaults.py`: port `80`, replicas, Kubernetes Service behavior, ingress disabled, readiness probe enabled, and CPU/memory requests. Services only override them when needed:
 
 ```json
 {
@@ -152,6 +153,74 @@ Most settings are service defaults in `paas_platform/service.py`: port `80`, rep
     {
       "name": "future-cluster",
       "enabled": false
+    }
+  ]
+}
+```
+
+Defaults resolve in this order:
+
+```text
+platform service defaults < environment defaults < service overrides < target cluster overrides
+```
+
+The cluster inventory owns each target's `environment`. For example, `local` is `dev` and `future-cluster` is `staging`. A minimal service still stays small:
+
+```json
+{
+  "name": "my-app",
+  "image": "ghcr.io/example/my-app:latest",
+  "targetClusters": ["local", "future-cluster"]
+}
+```
+
+With that declaration, `my-app` gets the default `dev` replica/resource/service behavior on `local`, and the default `staging` behavior on `future-cluster`.
+
+Service declarations can override environment defaults for every target:
+
+```json
+{
+  "name": "api",
+  "image": "httpd:2.4-alpine",
+  "replicas": 3,
+  "resources": {
+    "requests": {
+      "memory": "96Mi"
+    }
+  },
+  "service": {
+    "type": "ClusterIP"
+  },
+  "targetClusters": ["future-cluster"]
+}
+```
+
+Target cluster entries can override service settings for one cluster only:
+
+```json
+{
+  "name": "api",
+  "image": "httpd:2.4-alpine",
+  "targetClusters": [
+    "local",
+    {
+      "name": "future-cluster",
+      "replicas": 4,
+      "resources": {
+        "limits": {
+          "cpu": "500m"
+        }
+      },
+      "service": {
+        "type": "NodePort",
+        "ports": [
+          {
+            "name": "http",
+            "port": 9000,
+            "targetPort": 80
+          }
+        ]
+      }
     }
   ]
 }

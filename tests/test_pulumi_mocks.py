@@ -7,6 +7,7 @@ import pytest
 from pulumi.runtime import MockCallArgs, MockResourceArgs, Mocks, set_mocks
 from pulumi.runtime.config import set_all_config
 
+from paas_platform.defaults import service_config
 from paas_platform.service import (
     _env_from,
     _network_policy_ports,
@@ -106,6 +107,74 @@ def test_ingress_requires_service():
                 },
             )
         )
+
+
+def test_service_config_resolves_platform_environment_service_and_target_defaults():
+    resolved = service_config(
+        {
+            "name": "precedence-api",
+            "image": "ghcr.io/example/precedence-api:latest",
+            "replicas": 3,
+            "resources": {
+                "requests": {
+                    "memory": "96Mi",
+                },
+            },
+            "service": {
+                "type": "ClusterIP",
+            },
+            "targetClusters": ["future-cluster"],
+        },
+        "staging",
+        {
+            "name": "future-cluster",
+            "replicas": 4,
+            "resources": {
+                "limits": {
+                    "cpu": "500m",
+                },
+            },
+            "service": {
+                "type": "NodePort",
+                "ports": [
+                    {
+                        "name": "http",
+                        "port": 9000,
+                        "targetPort": 8080,
+                    },
+                ],
+            },
+        },
+    )
+
+    assert resolved["replicas"] == 4
+    assert resolved["resources"] == {
+        "requests": {
+            "cpu": "50m",
+            "memory": "96Mi",
+        },
+        "limits": {
+            "cpu": "500m",
+            "memory": "256Mi",
+        },
+    }
+    assert resolved["service"] == {
+        "enabled": True,
+        "type": "NodePort",
+        "ports": [
+            {
+                "name": "http",
+                "port": 9000,
+                "targetPort": 8080,
+            },
+        ],
+    }
+    assert resolved["readinessProbe"] == {
+        "enabled": True,
+        "path": "/",
+        "initialDelaySeconds": 3,
+        "periodSeconds": 5,
+    }
 
 
 @pulumi.runtime.test
@@ -426,11 +495,17 @@ def test_service_can_target_future_cluster_with_cluster_overrides():
             for resource in _resources_by_type("kubernetes:core/v1:ConfigMap")
             if resource["name"] == "multi-api-future-cluster-config-map"
         ]
+        future_services = [
+            resource
+            for resource in _resources_by_type("kubernetes:core/v1:Service")
+            if resource["name"] == "multi-api-future-cluster-service"
+        ]
 
         assert len(outputs) == 2
         assert len(future_namespaces) == 1
         assert len(future_deployments) == 1
         assert len(future_config_maps) == 1
+        assert len(future_services) == 1
 
         namespace_inputs = future_namespaces[0]["inputs"]
         assert namespace_inputs["metadata"]["labels"]["paas.openai.com/environment"] == "staging"
@@ -445,10 +520,21 @@ def test_service_can_target_future_cluster_with_cluster_overrides():
                 "value": "staging",
             },
         ]
+        assert container["resources"] == {
+            "requests": {
+                "cpu": "50m",
+                "memory": "64Mi",
+            },
+            "limits": {
+                "cpu": "250m",
+                "memory": "256Mi",
+            },
+        }
 
         assert future_config_maps[0]["inputs"]["data"] == {
             "LOG_LEVEL": "debug",
         }
+        assert future_services[0]["inputs"]["spec"]["type"] == "LoadBalancer"
 
     return pulumi.Output.all(
         outputs[0]["namespace"],

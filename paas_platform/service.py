@@ -4,7 +4,7 @@ from .container import (
     env_from as _env_from,
     readiness_probe_spec as _readiness_probe,
 )
-from .defaults import SERVICE_DEFAULTS, service_config as _service_config
+from .defaults import service_config as _service_config
 from .labels import metadata_labels as _metadata_labels
 from .labels import selector_labels as _selector_labels
 from .resources import (
@@ -25,14 +25,19 @@ from .targets import target_config as _target_config
 
 
 def deploy_service(service: dict[str, Any]) -> list[dict[str, Any]]:
-    service_config = _service_config(service)
+    base_service_config = _service_config(service)
     outputs = []
 
-    for target in service_config.get("targetClusters", []):
-        target_config = _target_config(service_config["name"], target)
+    for target in base_service_config.get("targetClusters", []):
+        target_config = _target_config(base_service_config["name"], target)
         if not target_config.get("enabled", True):
             continue
 
+        service_config = _service_config(
+            service,
+            target_config["environment"],
+            target_config,
+        )
         outputs.append(_deploy_to_cluster(service_config, target_config))
 
     return outputs
