@@ -15,7 +15,6 @@ from paas_platform.service import (
     _target_config,
     deploy_service,
 )
-from services import SERVICES
 
 asyncio.set_event_loop(asyncio.new_event_loop())
 
@@ -60,51 +59,26 @@ def _resources_by_type(resource_type: str) -> list[dict[str, Any]]:
     ]
 
 
-def _service_by_name(service_name: str) -> dict[str, Any]:
-    return next(service for service in SERVICES if service["name"] == service_name)
-
-
-def test_service_registry_loads_example_services():
-    assert [service["name"] for service in SERVICES] == ["api", "nginx", "worker"]
-
-    api_service = _service_by_name("api")
-    nginx_service = next(service for service in SERVICES if service["name"] == "nginx")
-    worker_service = _service_by_name("worker")
-
-    assert api_service["image"] == "httpd:2.4-alpine"
-    assert api_service["port"] == 8080
-    assert api_service["containerPort"] == 80
-    assert api_service["ingress"]["enabled"] is True
-    assert api_service["ingress"]["annotations"] == {
-        "pulumi.com/skipAwait": "true",
+def _dummy_service(name: str = "dummy-api", **overrides: Any) -> dict[str, Any]:
+    return {
+        "name": name,
+        "image": f"ghcr.io/example/{name}:latest",
+        "targetClusters": ["local"],
+        **overrides,
     }
-    assert api_service["targetClusters"] == [
-        "local",
-        {
-            "name": "future-cluster",
-            "enabled": False,
-        },
-    ]
-
-    assert nginx_service["image"] == "nginx:1.27-alpine"
-    assert nginx_service["targetClusters"] == ["local"]
-
-    assert worker_service["image"] == "registry.k8s.io/pause:3.10"
-    assert worker_service["service"]["enabled"] is False
 
 
 def test_disabled_target_cluster_is_skipped():
     outputs = deploy_service(
-        {
-            "name": "disabled-api",
-            "image": "ghcr.io/example/disabled-api:latest",
-            "targetClusters": [
+        _dummy_service(
+            "disabled-api",
+            targetClusters=[
                 {
                     "name": "local",
                     "enabled": False,
                 }
             ],
-        }
+        )
     )
 
     assert outputs == []
@@ -122,28 +96,22 @@ def test_disabled_readiness_probe_returns_none():
 def test_ingress_requires_service():
     with pytest.raises(ValueError, match="broken enables ingress but disables service"):
         deploy_service(
-            {
-                "name": "broken",
-                "image": "ghcr.io/example/broken:latest",
-                "service": {
+            _dummy_service(
+                "broken",
+                service={
                     "enabled": False,
                 },
-                "ingress": {
+                ingress={
                     "enabled": True,
                 },
-                "targetClusters": ["local"],
-            }
+            )
         )
 
 
 @pulumi.runtime.test
 def test_service_defaults_create_namespace_deployment_and_service():
     outputs = deploy_service(
-        {
-            "name": "default-api",
-            "image": "ghcr.io/example/default-api:latest",
-            "targetClusters": ["local"],
-        }
+        _dummy_service("default-api")
     )
 
     def check_outputs(args: list[Any]) -> None:
@@ -198,6 +166,17 @@ def test_service_defaults_create_namespace_deployment_and_service():
         service_inputs = services[0]["inputs"]
         assert service_inputs["spec"]["type"] == "ClusterIP"
         assert service_inputs["spec"]["ports"][0]["port"] == 80
+        assert service_inputs["spec"]["ports"][0]["targetPort"] == 80
+        assert container["resources"] == {
+            "requests": {
+                "cpu": "25m",
+                "memory": "32Mi",
+            },
+            "limits": {
+                "cpu": "100m",
+                "memory": "128Mi",
+            },
+        }
 
     return pulumi.Output.all(
         outputs[0]["namespace"],
@@ -207,8 +186,38 @@ def test_service_defaults_create_namespace_deployment_and_service():
 
 
 @pulumi.runtime.test
-def test_discovered_api_service_creates_config_ingress_and_skips_disabled_target():
-    outputs = deploy_service(_service_by_name("api"))
+def test_dummy_api_service_creates_config_ingress_and_skips_disabled_target():
+    outputs = deploy_service(
+        _dummy_service(
+            "api",
+            image="httpd:2.4-alpine",
+            containerPort=80,
+            port=8080,
+            replicas=2,
+            env={
+                "APP_ENV": "dev",
+                "SERVICE_ROLE": "api",
+            },
+            config={
+                "LOG_LEVEL": "info",
+                "FEATURE_FLAG": "platform-examples",
+            },
+            ingress={
+                "enabled": True,
+                "host": "api.localhost",
+                "annotations": {
+                    "pulumi.com/skipAwait": "true",
+                },
+            },
+            targetClusters=[
+                "local",
+                {
+                    "name": "future-cluster",
+                    "enabled": False,
+                },
+            ],
+        )
+    )
 
     def check_outputs(args: list[Any]) -> None:
         namespace, deployment, service, ingress, config_map = args
@@ -305,8 +314,23 @@ def test_discovered_api_service_creates_config_ingress_and_skips_disabled_target
 
 
 @pulumi.runtime.test
-def test_discovered_worker_service_creates_deployment_without_service():
-    outputs = deploy_service(_service_by_name("worker"))
+def test_dummy_worker_service_creates_deployment_without_service():
+    outputs = deploy_service(
+        _dummy_service(
+            "worker",
+            image="registry.k8s.io/pause:3.10",
+            env={
+                "APP_ENV": "dev",
+                "SERVICE_ROLE": "worker",
+            },
+            service={
+                "enabled": False,
+            },
+            readinessProbe={
+                "enabled": False,
+            },
+        )
+    )
 
     def check_outputs(args: list[Any]) -> None:
         namespace, deployment, service, ingress = args

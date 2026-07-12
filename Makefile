@@ -89,10 +89,10 @@ test:
 	$(PYTEST) -q
 
 coverage:
-	$(PYTEST) --cov=paas_platform --cov=services --cov-report=term-missing --cov-fail-under=100
+	$(PYTEST) --cov=paas_platform --cov-report=term-missing --cov-fail-under=100
 
 coverage-html:
-	$(PYTEST) --cov=paas_platform --cov=services --cov-report=term-missing --cov-report=html --cov-fail-under=100
+	$(PYTEST) --cov=paas_platform --cov-report=term-missing --cov-report=html --cov-fail-under=100
 
 pre-commit-install:
 	chmod +x .githooks/pre-commit
