@@ -83,7 +83,7 @@ stack-rm:
 	$(PULUMI) stack rm $(STACK)
 
 compile:
-	$(PYTHON) -m py_compile __main__.py paas_platform/__init__.py paas_platform/clusters.py paas_platform/service.py services/__init__.py
+	$(PYTHON) -m py_compile __main__.py paas_platform/*.py services/__init__.py
 
 test:
 	$(PYTEST) -q
