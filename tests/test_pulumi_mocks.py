@@ -4,6 +4,7 @@ from typing import Any
 import pulumi
 import pytest
 from pulumi.runtime import MockCallArgs, MockResourceArgs, Mocks, set_mocks
+from pulumi.runtime.config import set_all_config
 
 from paas_platform.service import (
     _network_policy_ports,
@@ -36,6 +37,16 @@ class RecordingMocks(Mocks):
 
 mocks = RecordingMocks()
 set_mocks(mocks, project="pulumi-playground-k8s", stack="dev")
+set_all_config(
+    {
+        "configured-api:DATABASE_URL": "test-database-url",
+        "configured-api:API_TOKEN": "test-api-token",
+    },
+    secret_keys=[
+        "configured-api:DATABASE_URL",
+        "configured-api:API_TOKEN",
+    ],
+)
 
 
 def _resources_by_type(resource_type: str) -> list[dict[str, Any]]:
@@ -133,6 +144,8 @@ def test_service_defaults_create_namespace_deployment_and_service():
         assert len(deployments) == 1
         assert len(services) == 1
         assert len(ingresses) == 0
+        assert len(_resources_by_type("kubernetes:core/v1:ConfigMap")) == 0
+        assert len(_resources_by_type("kubernetes:core/v1:Secret")) == 0
         assert len(_resources_by_type("kubernetes:networking.k8s.io/v1:NetworkPolicy")) == 0
 
         namespace_inputs = namespaces[0]["inputs"]
@@ -146,6 +159,7 @@ def test_service_defaults_create_namespace_deployment_and_service():
         assert container["image"] == "ghcr.io/example/api:latest"
         assert container["ports"] == [{"containerPort": 80}]
         assert container["readinessProbe"]["httpGet"] == {"path": "/", "port": 80}
+        assert "envFrom" not in container
 
         service_inputs = services[0]["inputs"]
         assert service_inputs["spec"]["type"] == "ClusterIP"
@@ -225,6 +239,85 @@ def test_service_overrides_port_replicas_ingress_and_namespace():
         outputs[0]["deployment"],
         outputs[0]["service"],
         outputs[0]["ingress"],
+    ).apply(check_outputs)
+
+
+@pulumi.runtime.test
+def test_service_config_and_secrets_create_env_from_resources():
+    outputs = deploy_service(
+        {
+            "name": "configured-api",
+            "image": "ghcr.io/example/configured-api:latest",
+            "config": {
+                "LOG_LEVEL": "info",
+                "FEATURE_FLAG": "enabled",
+            },
+            "secrets": [
+                "DATABASE_URL",
+                "API_TOKEN",
+            ],
+            "targetClusters": ["local"],
+        }
+    )
+
+    def check_outputs(args: list[Any]) -> None:
+        config_map, secret = args
+
+        assert config_map == "configured-api"
+        assert secret == "configured-api"
+
+        config_maps = [
+            resource
+            for resource in _resources_by_type("kubernetes:core/v1:ConfigMap")
+            if resource["name"] == "configured-api-local-config-map"
+        ]
+        secrets = [
+            resource
+            for resource in _resources_by_type("kubernetes:core/v1:Secret")
+            if resource["name"] == "configured-api-local-secret"
+        ]
+        deployments = [
+            resource
+            for resource in _resources_by_type("kubernetes:apps/v1:Deployment")
+            if resource["name"] == "configured-api-local-deployment"
+        ]
+
+        assert len(config_maps) == 1
+        assert len(secrets) == 1
+        assert len(deployments) == 1
+
+        config_map_inputs = config_maps[0]["inputs"]
+        assert config_map_inputs["metadata"]["namespace"] == "configured-api-dev"
+        assert config_map_inputs["data"] == {
+            "LOG_LEVEL": "info",
+            "FEATURE_FLAG": "enabled",
+        }
+
+        secret_inputs = secrets[0]["inputs"]
+        assert secret_inputs["metadata"]["namespace"] == "configured-api-dev"
+        assert secret_inputs["type"] == "Opaque"
+        assert secret_inputs["stringData"]["value"] == {
+            "DATABASE_URL": "test-database-url",
+            "API_TOKEN": "test-api-token",
+        }
+
+        container = deployments[0]["inputs"]["spec"]["template"]["spec"]["containers"][0]
+        assert container["envFrom"] == [
+            {
+                "configMapRef": {
+                    "name": "configured-api",
+                },
+            },
+            {
+                "secretRef": {
+                    "name": "configured-api",
+                },
+            },
+        ]
+
+    return pulumi.Output.all(
+        outputs[0]["configMap"],
+        outputs[0]["secret"],
     ).apply(check_outputs)
 
 

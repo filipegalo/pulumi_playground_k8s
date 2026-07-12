@@ -6,6 +6,7 @@ The example service deploys:
 
 - a namespace named from the service and cluster environment, such as `nginx-dev`
 - an NGINX Deployment
+- optional ConfigMap and Secret resources when a service declares runtime config
 - a ClusterIP Service by default
 - no Ingress by default
 
@@ -134,3 +135,27 @@ Most settings are service defaults in `paas_platform/service.py`: port `80`, rep
   "targetClusters": ["local"]
 }
 ```
+
+Services can also expose runtime config as environment variables. Non-secret values go in `config` and are backed by a Kubernetes ConfigMap. Secret names go in `secrets` and are backed by a Kubernetes Secret populated from encrypted Pulumi stack config. The Deployment consumes both with `envFrom`:
+
+```json
+{
+  "name": "api",
+  "image": "ghcr.io/example/api:latest",
+  "config": {
+    "LOG_LEVEL": "info"
+  },
+  "secrets": [
+    "DATABASE_URL"
+  ],
+  "targetClusters": ["local"]
+}
+```
+
+Do not commit secret values to service declarations. Each Pulumi stack owns the secret values for its environment:
+
+```bash
+SECRET_VALUE='postgres://dev.example' make set-secret ENV=dev SERVICE=api SECRET_KEY=DATABASE_URL
+```
+
+For multiple environments, prefer one stack per environment. For example, the `dev` stack deploys to dev clusters and stores dev secrets, while a future `staging` stack deploys to staging clusters and stores staging secrets under the same service/key names.

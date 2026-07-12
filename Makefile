@@ -1,11 +1,13 @@
 SHELL := /bin/bash
 
 PULUMI_CONFIG_PASSPHRASE ?= local-dev-only
-STACK ?= dev
+ENV ?= dev
+STACK ?= $(ENV)
 NAMESPACE ?= nginx-dev
 SERVICE ?= nginx
 LOCAL_PORT ?= 8080
 SERVICE_PORT ?= 80
+SECRET_KEY ?= DUMMY_SECRET
 UV_CACHE_DIR ?= .uv-cache
 PYTHONPATH ?= .
 export UV_CACHE_DIR
@@ -16,7 +18,7 @@ PYTHON := $(UV) run python
 PYTEST := $(UV) run pytest
 PULUMI := PULUMI_CONFIG_PASSPHRASE=$(PULUMI_CONFIG_PASSPHRASE) pulumi
 
-.PHONY: help setup install install-dev login stack-select preview preview-diff up destroy stack-rm compile test coverage coverage-html pre-commit-install pre-commit validate kube-context kube-nodes kube-all port-forward clean
+.PHONY: help setup install install-dev login stack-select set-secret preview preview-diff up destroy stack-rm compile test coverage coverage-html pre-commit-install pre-commit validate kube-context kube-nodes kube-all port-forward clean
 
 help:
 	@echo "Useful commands:"
@@ -24,7 +26,8 @@ help:
 	@echo "  make install        Sync runtime dependencies with uv"
 	@echo "  make install-dev    Sync runtime and dev dependencies with uv"
 	@echo "  make login          Use Pulumi local backend"
-	@echo "  make stack-select   Select Pulumi stack, default STACK=dev"
+	@echo "  make stack-select   Select Pulumi stack, default ENV=dev"
+	@echo "  make set-secret     Set encrypted secret config for ENV=$(ENV), SERVICE=$(SERVICE), SECRET_KEY=$(SECRET_KEY)"
 	@echo "  make preview        Run pulumi preview"
 	@echo "  make preview-diff   Run pulumi preview --diff"
 	@echo "  make up             Apply with pulumi up --diff"
@@ -55,6 +58,14 @@ login:
 
 stack-select:
 	$(PULUMI) stack select $(STACK)
+
+set-secret:
+	@if [ -z "$$SECRET_VALUE" ]; then \
+		echo "SECRET_VALUE is required. Example: SECRET_VALUE=local-dev-only make set-secret ENV=dev SERVICE=nginx SECRET_KEY=DUMMY_SECRET"; \
+		exit 1; \
+	fi
+	@$(PULUMI) stack select $(STACK) >/dev/null
+	@$(PULUMI) config set --secret $(SERVICE):$(SECRET_KEY) "$$SECRET_VALUE"
 
 preview:
 	$(PULUMI) preview

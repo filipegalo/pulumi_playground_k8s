@@ -48,6 +48,8 @@ SERVICE_DEFAULTS = {
             "ports": [],
         },
     },
+    "config": {},
+    "secrets": [],
 }
 
 
@@ -92,6 +94,25 @@ def _deploy_to_cluster(service: dict[str, Any], cluster: dict[str, Any]) -> dict
         opts=pulumi.ResourceOptions(provider=provider),
     )
 
+    config_map = _create_config_map(
+        service_name,
+        cluster_name,
+        namespace,
+        metadata_labels,
+        provider,
+        _merged_runtime_config(service, cluster, "config"),
+        resource_names,
+    )
+    secret = _create_secret(
+        service_name,
+        cluster_name,
+        namespace,
+        metadata_labels,
+        provider,
+        _secret_config_names(service, cluster),
+        resource_names,
+    )
+
     deployment = k8s.apps.v1.Deployment(
         resource_names.get("deployment", f"{service_name}-{cluster_name}-deployment"),
         metadata={
@@ -109,11 +130,18 @@ def _deploy_to_cluster(service: dict[str, Any], cluster: dict[str, Any]) -> dict
                     "labels": metadata_labels,
                 },
                 "spec": {
-                    "containers": [_container_spec(service, cluster)],
+                    "containers": [_container_spec(service, cluster, config_map, secret)],
                 },
             },
         },
-        opts=pulumi.ResourceOptions(provider=provider),
+        opts=pulumi.ResourceOptions(
+            provider=provider,
+            depends_on=[
+                resource
+                for resource in [config_map, secret]
+                if resource is not None
+            ],
+        ),
     )
 
     service_resource = None
@@ -170,12 +198,67 @@ def _deploy_to_cluster(service: dict[str, Any], cluster: dict[str, Any]) -> dict
         "environment": environment,
         "namespace": namespace.metadata["name"],
         "deployment": deployment.metadata["name"],
+        "configMap": config_map.metadata["name"] if config_map else None,
+        "secret": secret.metadata["name"] if secret else None,
         "service": service_resource.metadata["name"] if service_resource else None,
         "ingress": ingress_resource.metadata["name"] if ingress_resource else None,
         "networkPolicy": (
             network_policy_resource.metadata["name"] if network_policy_resource else None
         ),
     }
+
+
+def _create_config_map(
+    service_name: str,
+    cluster_name: str,
+    namespace: k8s.core.v1.Namespace,
+    metadata_labels: dict[str, str],
+    provider: k8s.Provider,
+    config: dict[str, str],
+    resource_names: dict[str, str],
+) -> k8s.core.v1.ConfigMap | None:
+    if not config:
+        return None
+
+    return k8s.core.v1.ConfigMap(
+        resource_names.get("configMap", f"{service_name}-{cluster_name}-config-map"),
+        metadata={
+            "name": service_name,
+            "namespace": namespace.metadata["name"],
+            "labels": metadata_labels,
+        },
+        data=config,
+        opts=pulumi.ResourceOptions(provider=provider),
+    )
+
+
+def _create_secret(
+    service_name: str,
+    cluster_name: str,
+    namespace: k8s.core.v1.Namespace,
+    metadata_labels: dict[str, str],
+    provider: k8s.Provider,
+    secrets: list[str],
+    resource_names: dict[str, str],
+) -> k8s.core.v1.Secret | None:
+    if not secrets:
+        return None
+
+    service_config = pulumi.Config(service_name)
+    return k8s.core.v1.Secret(
+        resource_names.get("secret", f"{service_name}-{cluster_name}-secret"),
+        metadata={
+            "name": service_name,
+            "namespace": namespace.metadata["name"],
+            "labels": metadata_labels,
+        },
+        string_data={
+            secret_name: service_config.require_secret(secret_name)
+            for secret_name in secrets
+        },
+        type="Opaque",
+        opts=pulumi.ResourceOptions(provider=provider),
+    )
 
 
 def _create_service(
@@ -431,11 +514,17 @@ def _network_policy_ports(
     ]
 
 
-def _container_spec(service: dict[str, Any], cluster: dict[str, Any]) -> dict[str, Any]:
+def _container_spec(
+    service: dict[str, Any],
+    cluster: dict[str, Any],
+    config_map: k8s.core.v1.ConfigMap | None,
+    secret: k8s.core.v1.Secret | None,
+) -> dict[str, Any]:
     container_port = service["containerPort"]
     env = service.get("env", {})
     cluster_env = cluster.get("env", {})
     readiness_probe = _readiness_probe(service["readinessProbe"], container_port)
+    env_from = _env_from(config_map, secret)
 
     return {
         "name": service["name"],
@@ -445,9 +534,52 @@ def _container_spec(service: dict[str, Any], cluster: dict[str, Any]) -> dict[st
             {"name": key, "value": value}
             for key, value in {**env, **cluster_env}.items()
         ],
+        **({"envFrom": env_from} if env_from else {}),
         **({"readinessProbe": readiness_probe} if readiness_probe else {}),
         "resources": service["resources"],
     }
+
+
+def _env_from(
+    config_map: k8s.core.v1.ConfigMap | None,
+    secret: k8s.core.v1.Secret | None,
+) -> list[dict[str, Any]]:
+    env_from = []
+
+    if config_map is not None:
+        env_from.append(
+            {
+                "configMapRef": {
+                    "name": config_map.metadata["name"],
+                },
+            }
+        )
+
+    if secret is not None:
+        env_from.append(
+            {
+                "secretRef": {
+                    "name": secret.metadata["name"],
+                },
+            }
+        )
+
+    return env_from
+
+
+def _merged_runtime_config(
+    service: dict[str, Any],
+    cluster: dict[str, Any],
+    key: str,
+) -> dict[str, str]:
+    return {
+        **service.get(key, {}),
+        **cluster.get(key, {}),
+    }
+
+
+def _secret_config_names(service: dict[str, Any], cluster: dict[str, Any]) -> list[str]:
+    return list(dict.fromkeys([*service.get("secrets", []), *cluster.get("secrets", [])]))
 
 
 def _selector_labels(service_name: str) -> dict[str, str]:
