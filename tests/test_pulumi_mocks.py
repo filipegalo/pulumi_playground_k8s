@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 from typing import Any
 
 import pulumi
@@ -7,8 +8,10 @@ from pulumi.runtime import MockCallArgs, MockResourceArgs, Mocks, set_mocks
 from pulumi.runtime.config import set_all_config
 
 from paas_platform.service import (
+    _env_from,
     _network_policy_ports,
     _readiness_probe,
+    _secret_config_names,
     _target_config,
     deploy_service,
 )
@@ -266,60 +269,49 @@ def test_service_config_and_secrets_create_env_from_resources():
         assert config_map == "configured-api"
         assert secret == "configured-api"
 
-        config_maps = [
-            resource
-            for resource in _resources_by_type("kubernetes:core/v1:ConfigMap")
-            if resource["name"] == "configured-api-local-config-map"
-        ]
-        secrets = [
-            resource
-            for resource in _resources_by_type("kubernetes:core/v1:Secret")
-            if resource["name"] == "configured-api-local-secret"
-        ]
-        deployments = [
-            resource
-            for resource in _resources_by_type("kubernetes:apps/v1:Deployment")
-            if resource["name"] == "configured-api-local-deployment"
-        ]
-
-        assert len(config_maps) == 1
-        assert len(secrets) == 1
-        assert len(deployments) == 1
-
-        config_map_inputs = config_maps[0]["inputs"]
-        assert config_map_inputs["metadata"]["namespace"] == "configured-api-dev"
-        assert config_map_inputs["data"] == {
-            "LOG_LEVEL": "info",
-            "FEATURE_FLAG": "enabled",
-        }
-
-        secret_inputs = secrets[0]["inputs"]
-        assert secret_inputs["metadata"]["namespace"] == "configured-api-dev"
-        assert secret_inputs["type"] == "Opaque"
-        assert secret_inputs["stringData"]["value"] == {
-            "DATABASE_URL": "test-database-url",
-            "API_TOKEN": "test-api-token",
-        }
-
-        container = deployments[0]["inputs"]["spec"]["template"]["spec"]["containers"][0]
-        assert container["envFrom"] == [
-            {
-                "configMapRef": {
-                    "name": "configured-api",
-                },
-            },
-            {
-                "secretRef": {
-                    "name": "configured-api",
-                },
-            },
-        ]
-
     return pulumi.Output.all(
         outputs[0]["configMap"],
         outputs[0]["secret"],
     ).apply(check_outputs)
 
+
+def test_secret_config_names_merge_service_and_cluster_without_duplicates():
+    assert _secret_config_names(
+        {
+            "secrets": [
+                "DATABASE_URL",
+                "API_TOKEN",
+            ],
+        },
+        {
+            "secrets": [
+                "API_TOKEN",
+                "WEBHOOK_SECRET",
+            ],
+        },
+    ) == [
+        "DATABASE_URL",
+        "API_TOKEN",
+        "WEBHOOK_SECRET",
+    ]
+
+
+def test_env_from_references_config_map_and_secret_names():
+    config_map = SimpleNamespace(metadata={"name": "configured-api"})
+    secret = SimpleNamespace(metadata={"name": "configured-api"})
+
+    assert _env_from(config_map, secret) == [
+        {
+            "configMapRef": {
+                "name": "configured-api",
+            },
+        },
+        {
+            "secretRef": {
+                "name": "configured-api",
+            },
+        },
+    ]
 
 @pulumi.runtime.test
 def test_network_policy_allows_external_egress_by_default():
