@@ -494,12 +494,19 @@ def test_service_can_target_future_cluster_with_cluster_overrides():
     )
 
     def check_outputs(args: list[Any]) -> None:
-        local_namespace, future_namespace, future_deployment, future_config_map = args
+        (
+            local_namespace,
+            future_namespace,
+            future_deployment,
+            future_config_map,
+            future_service,
+        ) = args
 
         assert local_namespace == "multi-api"
         assert future_namespace == "multi-api"
         assert future_deployment == "multi-api"
         assert future_config_map == "multi-api"
+        assert future_service == "multi-api"
 
         future_namespaces = [
             resource
@@ -562,6 +569,7 @@ def test_service_can_target_future_cluster_with_cluster_overrides():
         outputs[1]["namespace"],
         outputs[1]["deployment"],
         outputs[1]["configMap"],
+        outputs[1]["service"],
     ).apply(check_outputs)
 
 
