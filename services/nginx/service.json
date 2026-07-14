@@ -1,17 +1,11 @@
 {
   "name": "nginx",
   "image": "nginx:1.27-alpine",
-  "env": {
-    "APP_ENV": "dev"
-  },
   "secrets": [
     "DUMMY_SECRET",
     "DUMMY_SECRET_2"
   ],
   "networkPolicy": {
     "enabled": true
-  },
-  "targetClusters": [
-    "local"
-  ]
+  }
 }

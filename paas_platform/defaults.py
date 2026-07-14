@@ -68,7 +68,7 @@ ENVIRONMENT_DEFAULTS = {
     "staging": {
         "replicas": 2,
         "service": {
-            "type": "LoadBalancer",
+            "type": "ClusterIP",
         },
         "resources": {
             "requests": {

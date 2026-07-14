@@ -3,8 +3,8 @@ from typing import Any
 from .clusters import CLUSTERS
 
 
-def default_namespace(service_name: str, environment: str) -> str:
-    return f"{service_name}-{environment}"
+def default_namespace(service_name: str, _environment: str) -> str:
+    return service_name
 
 
 def target_config(service_name: str, target: str | dict[str, Any]) -> dict[str, Any]:

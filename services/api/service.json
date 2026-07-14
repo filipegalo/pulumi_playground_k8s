@@ -5,7 +5,6 @@
   "containerPort": 80,
   "replicas": 2,
   "env": {
-    "APP_ENV": "dev",
     "SERVICE_ROLE": "api"
   },
   "config": {
@@ -18,12 +17,5 @@
     "annotations": {
       "pulumi.com/skipAwait": "true"
     }
-  },
-  "targetClusters": [
-    "local",
-    {
-      "name": "future-cluster",
-      "enabled": false
-    }
-  ]
+  }
 }

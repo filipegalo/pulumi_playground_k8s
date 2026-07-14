@@ -16,6 +16,7 @@ from paas_platform.service import (
     _target_config,
     deploy_service,
 )
+from services import load_services
 
 asyncio.set_event_loop(asyncio.new_event_loop())
 
@@ -64,9 +65,29 @@ def _dummy_service(name: str = "dummy-api", **overrides: Any) -> dict[str, Any]:
     return {
         "name": name,
         "image": f"ghcr.io/example/{name}:latest",
-        "targetClusters": ["local"],
+        "targetClusters": ["dev"],
         **overrides,
     }
+
+
+def test_load_services_uses_stack_named_target_overlays():
+    dev_services = load_services("dev")
+    staging_services = load_services("staging")
+
+    assert [service["name"] for service in dev_services] == ["api", "nginx", "worker"]
+    assert [service["name"] for service in staging_services] == ["nginx"]
+    assert all(
+        service["targetClusters"][0]["name"] == "dev"
+        for service in dev_services
+    )
+    assert staging_services[0]["targetClusters"] == [
+        {
+            "name": "staging",
+            "env": {
+                "APP_ENV": "staging",
+            },
+        },
+    ]
 
 
 def test_disabled_target_cluster_is_skipped():
@@ -75,7 +96,7 @@ def test_disabled_target_cluster_is_skipped():
             "disabled-api",
             targetClusters=[
                 {
-                    "name": "local",
+                    "name": "dev",
                     "enabled": False,
                 }
             ],
@@ -123,11 +144,11 @@ def test_service_config_resolves_platform_environment_service_and_target_default
             "service": {
                 "type": "ClusterIP",
             },
-            "targetClusters": ["future-cluster"],
+            "targetClusters": ["staging"],
         },
         "staging",
         {
-            "name": "future-cluster",
+            "name": "staging",
             "replicas": 4,
             "resources": {
                 "limits": {
@@ -186,29 +207,29 @@ def test_service_defaults_create_namespace_deployment_and_service():
     def check_outputs(args: list[Any]) -> None:
         namespace, deployment, service = args
 
-        assert namespace == "default-api-dev"
+        assert namespace == "default-api"
         assert deployment == "default-api"
         assert service == "default-api"
 
         namespaces = [
             resource
             for resource in _resources_by_type("kubernetes:core/v1:Namespace")
-            if resource["name"] == "default-api-local-namespace"
+            if resource["name"] == "default-api-dev-namespace"
         ]
         deployments = [
             resource
             for resource in _resources_by_type("kubernetes:apps/v1:Deployment")
-            if resource["name"] == "default-api-local-deployment"
+            if resource["name"] == "default-api-dev-deployment"
         ]
         services = [
             resource
             for resource in _resources_by_type("kubernetes:core/v1:Service")
-            if resource["name"] == "default-api-local-service"
+            if resource["name"] == "default-api-dev-service"
         ]
         ingresses = [
             resource
             for resource in _resources_by_type("kubernetes:networking.k8s.io/v1:Ingress")
-            if resource["name"] == "default-api-local-ingress"
+            if resource["name"] == "default-api-dev-ingress"
         ]
 
         assert len(namespaces) == 1
@@ -220,12 +241,12 @@ def test_service_defaults_create_namespace_deployment_and_service():
         assert len(_resources_by_type("kubernetes:networking.k8s.io/v1:NetworkPolicy")) == 0
 
         namespace_inputs = namespaces[0]["inputs"]
-        assert namespace_inputs["metadata"]["name"] == "default-api-dev"
+        assert namespace_inputs["metadata"]["name"] == "default-api"
         assert namespace_inputs["metadata"]["labels"]["paas.openai.com/environment"] == "dev"
 
         deployment_inputs = deployments[0]["inputs"]
         container = deployment_inputs["spec"]["template"]["spec"]["containers"][0]
-        assert deployment_inputs["metadata"]["namespace"] == "default-api-dev"
+        assert deployment_inputs["metadata"]["namespace"] == "default-api"
         assert deployment_inputs["spec"]["replicas"] == 1
         assert container["image"] == "ghcr.io/example/default-api:latest"
         assert container["ports"] == [{"containerPort": 80}]
@@ -279,9 +300,9 @@ def test_dummy_api_service_creates_config_ingress_and_skips_disabled_target():
                 },
             },
             targetClusters=[
-                "local",
+                "dev",
                 {
-                    "name": "future-cluster",
+                    "name": "staging",
                     "enabled": False,
                 },
             ],
@@ -292,7 +313,7 @@ def test_dummy_api_service_creates_config_ingress_and_skips_disabled_target():
         namespace, deployment, service, ingress, config_map = args
 
         assert len(outputs) == 1
-        assert namespace == "api-dev"
+        assert namespace == "api"
         assert deployment == "api"
         assert service == "api"
         assert ingress == "api"
@@ -301,27 +322,27 @@ def test_dummy_api_service_creates_config_ingress_and_skips_disabled_target():
         deployments = [
             resource
             for resource in _resources_by_type("kubernetes:apps/v1:Deployment")
-            if resource["name"] == "api-local-deployment"
+            if resource["name"] == "api-dev-deployment"
         ]
         services = [
             resource
             for resource in _resources_by_type("kubernetes:core/v1:Service")
-            if resource["name"] == "api-local-service"
+            if resource["name"] == "api-dev-service"
         ]
         ingresses = [
             resource
             for resource in _resources_by_type("kubernetes:networking.k8s.io/v1:Ingress")
-            if resource["name"] == "api-local-ingress"
+            if resource["name"] == "api-dev-ingress"
         ]
         config_maps = [
             resource
             for resource in _resources_by_type("kubernetes:core/v1:ConfigMap")
-            if resource["name"] == "api-local-config-map"
+            if resource["name"] == "api-dev-config-map"
         ]
         future_deployments = [
             resource
             for resource in _resources_by_type("kubernetes:apps/v1:Deployment")
-            if resource["name"] == "api-future-cluster-deployment"
+            if resource["name"] == "api-staging-deployment"
         ]
 
         assert len(deployments) == 1
@@ -404,7 +425,7 @@ def test_dummy_worker_service_creates_deployment_without_service():
     def check_outputs(args: list[Any]) -> None:
         namespace, deployment, service, ingress = args
 
-        assert namespace == "worker-dev"
+        assert namespace == "worker"
         assert deployment == "worker"
         assert service is None
         assert ingress is None
@@ -412,12 +433,12 @@ def test_dummy_worker_service_creates_deployment_without_service():
         deployments = [
             resource
             for resource in _resources_by_type("kubernetes:apps/v1:Deployment")
-            if resource["name"] == "worker-local-deployment"
+            if resource["name"] == "worker-dev-deployment"
         ]
         services = [
             resource
             for resource in _resources_by_type("kubernetes:core/v1:Service")
-            if resource["name"] == "worker-local-service"
+            if resource["name"] == "worker-dev-service"
         ]
 
         assert len(deployments) == 1
@@ -457,9 +478,9 @@ def test_service_can_target_future_cluster_with_cluster_overrides():
                 "LOG_LEVEL": "info",
             },
             "targetClusters": [
-                "local",
+                "dev",
                 {
-                    "name": "future-cluster",
+                    "name": "staging",
                     "replicas": 3,
                     "env": {
                         "APP_ENV": "staging",
@@ -475,30 +496,30 @@ def test_service_can_target_future_cluster_with_cluster_overrides():
     def check_outputs(args: list[Any]) -> None:
         local_namespace, future_namespace, future_deployment, future_config_map = args
 
-        assert local_namespace == "multi-api-dev"
-        assert future_namespace == "multi-api-staging"
+        assert local_namespace == "multi-api"
+        assert future_namespace == "multi-api"
         assert future_deployment == "multi-api"
         assert future_config_map == "multi-api"
 
         future_namespaces = [
             resource
             for resource in _resources_by_type("kubernetes:core/v1:Namespace")
-            if resource["name"] == "multi-api-future-cluster-namespace"
+            if resource["name"] == "multi-api-staging-namespace"
         ]
         future_deployments = [
             resource
             for resource in _resources_by_type("kubernetes:apps/v1:Deployment")
-            if resource["name"] == "multi-api-future-cluster-deployment"
+            if resource["name"] == "multi-api-staging-deployment"
         ]
         future_config_maps = [
             resource
             for resource in _resources_by_type("kubernetes:core/v1:ConfigMap")
-            if resource["name"] == "multi-api-future-cluster-config-map"
+            if resource["name"] == "multi-api-staging-config-map"
         ]
         future_services = [
             resource
             for resource in _resources_by_type("kubernetes:core/v1:Service")
-            if resource["name"] == "multi-api-future-cluster-service"
+            if resource["name"] == "multi-api-staging-service"
         ]
 
         assert len(outputs) == 2
@@ -512,7 +533,7 @@ def test_service_can_target_future_cluster_with_cluster_overrides():
 
         deployment_inputs = future_deployments[0]["inputs"]
         container = deployment_inputs["spec"]["template"]["spec"]["containers"][0]
-        assert deployment_inputs["metadata"]["namespace"] == "multi-api-staging"
+        assert deployment_inputs["metadata"]["namespace"] == "multi-api"
         assert deployment_inputs["spec"]["replicas"] == 3
         assert container["env"] == [
             {
@@ -534,7 +555,7 @@ def test_service_can_target_future_cluster_with_cluster_overrides():
         assert future_config_maps[0]["inputs"]["data"] == {
             "LOG_LEVEL": "debug",
         }
-        assert future_services[0]["inputs"]["spec"]["type"] == "LoadBalancer"
+        assert future_services[0]["inputs"]["spec"]["type"] == "ClusterIP"
 
     return pulumi.Output.all(
         outputs[0]["namespace"],
@@ -558,7 +579,7 @@ def test_service_overrides_port_replicas_ingress_and_namespace():
             },
             "targetClusters": [
                 {
-                    "name": "local",
+                    "name": "dev",
                     "namespace": "custom-web",
                 }
             ],
@@ -576,17 +597,17 @@ def test_service_overrides_port_replicas_ingress_and_namespace():
         deployments = [
             resource
             for resource in _resources_by_type("kubernetes:apps/v1:Deployment")
-            if resource["name"] == "web-local-deployment"
+            if resource["name"] == "web-dev-deployment"
         ]
         services = [
             resource
             for resource in _resources_by_type("kubernetes:core/v1:Service")
-            if resource["name"] == "web-local-service"
+            if resource["name"] == "web-dev-service"
         ]
         ingresses = [
             resource
             for resource in _resources_by_type("kubernetes:networking.k8s.io/v1:Ingress")
-            if resource["name"] == "web-local-ingress"
+            if resource["name"] == "web-dev-ingress"
         ]
 
         assert len(deployments) == 1
@@ -632,7 +653,7 @@ def test_service_config_and_secrets_create_env_from_resources():
                 "DATABASE_URL",
                 "API_TOKEN",
             ],
-            "targetClusters": ["local"],
+            "targetClusters": ["dev"],
         }
     )
 
@@ -702,7 +723,7 @@ def test_network_policy_allows_external_egress_by_default():
                     "fromNamespaces": ["ingress-nginx"],
                 },
             },
-            "targetClusters": ["local"],
+            "targetClusters": ["dev"],
         }
     )
 
@@ -714,13 +735,13 @@ def test_network_policy_allows_external_egress_by_default():
         policies = [
             resource
             for resource in _resources_by_type("kubernetes:networking.k8s.io/v1:NetworkPolicy")
-            if resource["name"] == "api-local-network-policy"
+            if resource["name"] == "api-dev-network-policy"
         ]
 
         assert len(policies) == 1
 
         policy_inputs = policies[0]["inputs"]
-        assert policy_inputs["metadata"]["namespace"] == "api-dev"
+        assert policy_inputs["metadata"]["namespace"] == "api"
         assert policy_inputs["spec"]["policyTypes"] == ["Ingress"]
         assert "egress" not in policy_inputs["spec"]
 
@@ -770,7 +791,7 @@ def test_network_policy_can_restrict_egress():
                     ],
                 },
             },
-            "targetClusters": ["local"],
+            "targetClusters": ["dev"],
         }
     )
 
@@ -782,7 +803,7 @@ def test_network_policy_can_restrict_egress():
         policies = [
             resource
             for resource in _resources_by_type("kubernetes:networking.k8s.io/v1:NetworkPolicy")
-            if resource["name"] == "worker-local-network-policy"
+            if resource["name"] == "worker-dev-network-policy"
         ]
 
         assert len(policies) == 1
@@ -833,7 +854,7 @@ def test_network_policy_without_ingress_peers_denies_ingress():
             "networkPolicy": {
                 "enabled": True,
             },
-            "targetClusters": ["local"],
+            "targetClusters": ["dev"],
         }
     )
 
@@ -845,7 +866,7 @@ def test_network_policy_without_ingress_peers_denies_ingress():
         policies = [
             resource
             for resource in _resources_by_type("kubernetes:networking.k8s.io/v1:NetworkPolicy")
-            if resource["name"] == "isolated-local-network-policy"
+            if resource["name"] == "isolated-dev-network-policy"
         ]
 
         assert len(policies) == 1
@@ -867,7 +888,7 @@ def test_network_policy_restricted_egress_without_peers_denies_egress():
                     "allowExternal": False,
                 },
             },
-            "targetClusters": ["local"],
+            "targetClusters": ["dev"],
         }
     )
 
@@ -879,7 +900,7 @@ def test_network_policy_restricted_egress_without_peers_denies_egress():
         policies = [
             resource
             for resource in _resources_by_type("kubernetes:networking.k8s.io/v1:NetworkPolicy")
-            if resource["name"] == "locked-down-local-network-policy"
+            if resource["name"] == "locked-down-dev-network-policy"
         ]
 
         assert len(policies) == 1

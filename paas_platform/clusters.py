@@ -1,12 +1,12 @@
 CLUSTERS = {
-    "local": {
-        "name": "local",
-        "context": "kind-local",
+    "dev": {
+        "name": "dev",
+        "context": "kind-dev",
         "environment": "dev",
     },
-    "future-cluster": {
-        "name": "future-cluster",
-        "context": "some-other-context",
+    "staging": {
+        "name": "staging",
+        "context": "kind-staging",
         "environment": "staging",
     },
 }

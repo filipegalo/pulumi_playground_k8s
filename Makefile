@@ -3,34 +3,41 @@ SHELL := /bin/bash
 PULUMI_CONFIG_PASSPHRASE ?= local-dev-only
 ENV ?= dev
 STACK ?= $(ENV)
-NAMESPACE ?= nginx-dev
+NAMESPACE ?= nginx
 SERVICE ?= nginx
 LOCAL_PORT ?= 8080
 SERVICE_PORT ?= 80
 SECRET_KEY ?= DUMMY_SECRET
+DEV_CLUSTER ?= dev
+STAGING_CLUSTER ?= staging
 UV_CACHE_DIR ?= .uv-cache
 PYTHONPATH ?= .
 export UV_CACHE_DIR
 export PYTHONPATH
 
 UV := uv
+KIND := kind
 PYTHON := $(UV) run python
 PYTEST := $(UV) run pytest
 PULUMI := PULUMI_CONFIG_PASSPHRASE=$(PULUMI_CONFIG_PASSPHRASE) pulumi
 
-.PHONY: help setup install install-dev login stack-select set-secret preview preview-diff up destroy stack-rm compile test coverage coverage-html pre-commit-install pre-commit validate kube-context kube-nodes kube-all port-forward clean
+.PHONY: help setup install install-dev cluster-dev cluster-staging launch-clusters login stack-init stack-select set-secret preview preview-diff up destroy stack-rm compile test coverage coverage-html pre-commit-install pre-commit validate kube-context kube-nodes kube-all port-forward clean
 
 help:
 	@echo "Useful commands:"
 	@echo "  make setup          Create .venv and install Python dependencies"
 	@echo "  make install        Sync runtime dependencies with uv"
 	@echo "  make install-dev    Sync runtime and dev dependencies with uv"
+	@echo "  make launch-clusters  Create dev and staging kind clusters"
+	@echo "  make cluster-dev      Create kind cluster DEV_CLUSTER=$(DEV_CLUSTER)"
+	@echo "  make cluster-staging  Create kind cluster STAGING_CLUSTER=$(STAGING_CLUSTER)"
 	@echo "  make login          Use Pulumi local backend"
-	@echo "  make stack-select   Select Pulumi stack, default ENV=dev"
-	@echo "  make set-secret     Set encrypted secret config for ENV=$(ENV), SERVICE=$(SERVICE), SECRET_KEY=$(SECRET_KEY)"
+	@echo "  make stack-init     Initialize Pulumi stack, default STACK=$(STACK)"
+	@echo "  make stack-select   Select Pulumi stack, default STACK=$(STACK)"
+	@echo "  make set-secret     Set encrypted secret config for STACK=$(STACK), SERVICE=$(SERVICE), SECRET_KEY=$(SECRET_KEY)"
 	@echo "  make preview        Run pulumi preview"
 	@echo "  make preview-diff   Run pulumi preview --diff"
-	@echo "  make up             Apply with pulumi up --diff"
+	@echo "  make up             Apply with pulumi up --diff --yes"
 	@echo "  make destroy        Destroy stack resources"
 	@echo "  make compile        Compile Python files"
 	@echo "  make test           Run Pulumi mock tests"
@@ -53,15 +60,35 @@ install:
 install-dev:
 	$(UV) sync
 
+cluster-dev:
+	@if $(KIND) get clusters | grep -qx "$(DEV_CLUSTER)"; then \
+		echo "kind cluster $(DEV_CLUSTER) already exists"; \
+	else \
+		$(KIND) create cluster --name $(DEV_CLUSTER); \
+	fi
+
+cluster-staging:
+	@if $(KIND) get clusters | grep -qx "$(STAGING_CLUSTER)"; then \
+		echo "kind cluster $(STAGING_CLUSTER) already exists"; \
+	else \
+		$(KIND) create cluster --name $(STAGING_CLUSTER); \
+	fi
+
+launch-clusters: cluster-dev cluster-staging
+	@echo "kind clusters ready: $(DEV_CLUSTER), $(STAGING_CLUSTER)"
+
 login:
 	pulumi login --local
+
+stack-init:
+	$(PULUMI) stack init $(STACK)
 
 stack-select:
 	$(PULUMI) stack select $(STACK)
 
 set-secret:
 	@if [ -z "$$SECRET_VALUE" ]; then \
-		echo "SECRET_VALUE is required. Example: SECRET_VALUE=local-dev-only make set-secret ENV=dev SERVICE=nginx SECRET_KEY=DUMMY_SECRET"; \
+		echo "SECRET_VALUE is required. Example: SECRET_VALUE=local-dev-only make set-secret STACK=dev SERVICE=nginx SECRET_KEY=DUMMY_SECRET"; \
 		exit 1; \
 	fi
 	@$(PULUMI) stack select $(STACK) >/dev/null
@@ -74,7 +101,7 @@ preview-diff:
 	$(PULUMI) preview --diff
 
 up:
-	$(PULUMI) up --diff
+	$(PULUMI) up --diff --yes
 
 destroy:
 	$(PULUMI) destroy --diff

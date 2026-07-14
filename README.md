@@ -11,6 +11,7 @@ A small Pulumi + Kubernetes playground for modeling a PaaS-style service platfor
 - [Repository layout](#repository-layout)
 - [Prerequisites](#prerequisites)
 - [Quickstart](#quickstart)
+- [Create everything from scratch](#create-everything-from-scratch)
 - [Inspect the deployment](#inspect-the-deployment)
 - [Core concepts](#core-concepts)
 - [Platform-owned vs developer-owned](#platform-owned-vs-developer-owned)
@@ -27,9 +28,9 @@ Pulumi Playground K8s is a Pulumi + Kubernetes playground that models a tiny Paa
 
 ## What you get
 
-- Auto-discovered service declarations from `services/*/service.json`
+- Auto-discovered service declarations from `services/*/service.json` plus stack-specific overlays such as `dev.json` and `staging.json`
 - Cluster targeting from a platform-owned inventory
-- Namespace defaults based on service name and cluster environment
+- Namespace defaults based on service name
 - Kubernetes Deployments, Services, optional Ingress, and optional NetworkPolicy
 - ConfigMaps and Secrets for runtime configuration
 - Pulumi mock tests that do not connect to Kubernetes
@@ -42,12 +43,13 @@ Pulumi Playground K8s is a Pulumi + Kubernetes playground that models a tiny Paa
 | Path | Purpose |
 | --- | --- |
 | `paas_platform/` | Reusable PaaS deployment primitives, defaults, labels, cluster inventory, and Kubernetes resource builders. |
-| `services/` | Developer-owned service declarations. Each service lives at `services/<service>/service.json`. |
+| `services/` | Developer-owned service declarations. Shared config lives at `services/<service>/service.json`; stack overlays live next to it, such as `dev.json` and `staging.json`. |
 | `tests/` | Pulumi mock tests for platform behavior. |
 | `.github/workflows/` | CI workflow for compile and coverage checks. |
 | `Makefile` | Common local commands for Pulumi, Kubernetes inspection, tests, coverage, and hooks. |
 | `Pulumi.yaml` | Pulumi project metadata and Python runtime configuration. |
 | `Pulumi.dev.yaml` | Local `dev` stack config, including encrypted example secret values. |
+| `Pulumi.staging.yaml` | Local `staging` stack config, including encrypted example secret values. |
 | `pyproject.toml` | Python package metadata, runtime dependencies, and dev dependencies. |
 | `uv.lock` | Locked Python dependency graph managed by `uv`. |
 
@@ -66,19 +68,49 @@ Useful upstream docs:
 
 ## Quickstart
 
-Verify your Kubernetes context first:
+Create the two kind clusters used by the platform inventory:
 
 ```bash
-kubectl config current-context
-kubectl get nodes
+make launch-clusters
+kubectl --context kind-dev get nodes
+kubectl --context kind-staging get nodes
 ```
 
-Then use the Makefile shortcuts:
+`make launch-clusters` creates `dev` and `staging` if they do not already exist. Then install dependencies and use the local Pulumi backend:
 
 ```bash
 make install-dev
 make login
-make stack-select
+```
+
+Initialize each Pulumi stack once. If a stack already exists, skip its init command and select it instead.
+
+```bash
+make stack-init STACK=dev
+make stack-init STACK=staging
+```
+
+Each stack needs its own encrypted secret values. The checked-in nginx service declares `DUMMY_SECRET` and `DUMMY_SECRET_2`, so set both keys in each stack:
+
+```bash
+SECRET_VALUE='<dev-nginx-secret-1>' make set-secret STACK=dev SERVICE=nginx SECRET_KEY=DUMMY_SECRET
+SECRET_VALUE='<dev-nginx-secret-2>' make set-secret STACK=dev SERVICE=nginx SECRET_KEY=DUMMY_SECRET_2
+SECRET_VALUE='<staging-nginx-secret-1>' make set-secret STACK=staging SERVICE=nginx SECRET_KEY=DUMMY_SECRET
+SECRET_VALUE='<staging-nginx-secret-2>' make set-secret STACK=staging SERVICE=nginx SECRET_KEY=DUMMY_SECRET_2
+```
+
+Deploy dev:
+
+```bash
+make stack-select STACK=dev
+make preview-diff
+make up
+```
+
+Deploy staging:
+
+```bash
+make stack-select STACK=staging
 make preview-diff
 make up
 ```
@@ -86,14 +118,101 @@ make up
 The equivalent raw commands are:
 
 ```bash
+kind create cluster --name dev
+kind create cluster --name staging
 uv sync
 pulumi login --local
+PULUMI_CONFIG_PASSPHRASE=local-dev-only pulumi stack init dev
+PULUMI_CONFIG_PASSPHRASE=local-dev-only pulumi stack init staging
+PULUMI_CONFIG_PASSPHRASE=local-dev-only pulumi stack select dev
+PULUMI_CONFIG_PASSPHRASE=local-dev-only pulumi config set --secret nginx:DUMMY_SECRET '<dev-nginx-secret-1>'
+PULUMI_CONFIG_PASSPHRASE=local-dev-only pulumi config set --secret nginx:DUMMY_SECRET_2 '<dev-nginx-secret-2>'
+PULUMI_CONFIG_PASSPHRASE=local-dev-only pulumi stack select staging
+PULUMI_CONFIG_PASSPHRASE=local-dev-only pulumi config set --secret nginx:DUMMY_SECRET '<staging-nginx-secret-1>'
+PULUMI_CONFIG_PASSPHRASE=local-dev-only pulumi config set --secret nginx:DUMMY_SECRET_2 '<staging-nginx-secret-2>'
 PULUMI_CONFIG_PASSPHRASE=local-dev-only pulumi stack select dev
 PULUMI_CONFIG_PASSPHRASE=local-dev-only pulumi preview --diff
-PULUMI_CONFIG_PASSPHRASE=local-dev-only pulumi up --diff
+PULUMI_CONFIG_PASSPHRASE=local-dev-only pulumi up --diff --yes
+PULUMI_CONFIG_PASSPHRASE=local-dev-only pulumi stack select staging
+PULUMI_CONFIG_PASSPHRASE=local-dev-only pulumi preview --diff
+PULUMI_CONFIG_PASSPHRASE=local-dev-only pulumi up --diff --yes
 ```
 
 The Makefile sets `PULUMI_CONFIG_PASSPHRASE=local-dev-only` by default for this disposable local lab stack.
+
+## Create everything from scratch
+
+This section is for a disposable local reset. It destroys Pulumi-managed resources, deletes the kind clusters, recreates the clusters, initializes/selects stacks, writes required secrets, and deploys again.
+
+If the kind clusters still exist, destroy the Pulumi resources first:
+
+```bash
+make stack-select STACK=staging
+make destroy
+make stack-select STACK=dev
+make destroy
+```
+
+Then delete the kind clusters:
+
+```bash
+kind delete cluster --name staging
+kind delete cluster --name dev
+```
+
+If you already deleted the kind clusters before running `pulumi destroy`, the Pulumi stacks may still contain state for resources that no longer exist. For this disposable lab, remove and recreate the stacks:
+
+```bash
+make stack-rm STACK=staging
+make stack-rm STACK=dev
+```
+
+Create the clusters again:
+
+```bash
+make launch-clusters
+kubectl --context kind-dev get nodes
+kubectl --context kind-staging get nodes
+```
+
+Install dependencies and use the local Pulumi backend:
+
+```bash
+make install-dev
+make login
+```
+
+Initialize the stacks if you removed them, or select them if they already exist:
+
+```bash
+make stack-init STACK=dev
+make stack-init STACK=staging
+```
+
+Set the required nginx secrets in both stacks:
+
+```bash
+SECRET_VALUE='<dev-nginx-secret-1>' make set-secret STACK=dev SERVICE=nginx SECRET_KEY=DUMMY_SECRET
+SECRET_VALUE='<dev-nginx-secret-2>' make set-secret STACK=dev SERVICE=nginx SECRET_KEY=DUMMY_SECRET_2
+SECRET_VALUE='<staging-nginx-secret-1>' make set-secret STACK=staging SERVICE=nginx SECRET_KEY=DUMMY_SECRET
+SECRET_VALUE='<staging-nginx-secret-2>' make set-secret STACK=staging SERVICE=nginx SECRET_KEY=DUMMY_SECRET_2
+```
+
+Deploy dev:
+
+```bash
+make stack-select STACK=dev
+make preview-diff
+make up
+```
+
+Deploy staging:
+
+```bash
+make stack-select STACK=staging
+make preview-diff
+make up
+```
 
 ## Inspect the deployment
 
@@ -104,20 +223,27 @@ make kube-all
 make port-forward
 ```
 
-By default, those commands inspect `NAMESPACE=nginx-dev`, forward `svc/nginx`, and expose it on `http://localhost:8080`.
+By default, those commands inspect `NAMESPACE=nginx`, forward `svc/nginx`, and expose it on `http://localhost:8080`.
 
 Raw `kubectl` equivalents:
 
 ```bash
-kubectl -n nginx-dev get all
-kubectl -n nginx-dev port-forward svc/nginx 8080:80
+kubectl -n nginx get all
+kubectl -n nginx port-forward svc/nginx 8080:80
 ```
 
 For another service:
 
 ```bash
-make kube-all NAMESPACE=api-dev
-make port-forward NAMESPACE=api-dev SERVICE=api LOCAL_PORT=8080 SERVICE_PORT=8080
+make kube-all NAMESPACE=api
+make port-forward NAMESPACE=api SERVICE=api LOCAL_PORT=8080 SERVICE_PORT=8080
+```
+
+For nginx on staging:
+
+```bash
+kubectl --context kind-staging -n nginx get all
+kubectl --context kind-staging -n nginx port-forward svc/nginx 8081:80
 ```
 
 ## Core concepts
@@ -140,22 +266,29 @@ Clusters are platform-owned in `paas_platform/clusters.py`. A service selects cl
 
 | Cluster | Kube context | Environment |
 | --- | --- | --- |
-| `local` | `kind-local` | `dev` |
-| `future-cluster` | `some-other-context` | `staging` |
-
-Targets can be disabled, which lets a service declaration describe a future target without deploying it yet.
+| `dev` | `kind-dev` | `dev` |
+| `staging` | `kind-staging` | `staging` |
 
 ### Service declarations
 
-`services/__init__.py` auto-discovers service declarations from `services/*/service.json`. `__main__.py` deploys each discovered service with `paas_platform.deploy_service`.
+`services/__init__.py` auto-discovers shared service declarations from `services/*/service.json` and combines them with the overlay file matching the selected Pulumi stack. `__main__.py` deploys each discovered service with `paas_platform.deploy_service`.
 
-Each declaration starts with a service name, image, and target clusters:
+Each shared declaration starts with a service name and image:
 
 ```json
 {
   "name": "my-app",
-  "image": "ghcr.io/example/my-app:latest",
-  "targetClusters": ["local"]
+  "image": "ghcr.io/example/my-app:latest"
+}
+```
+
+An overlay filename selects the target cluster. For example, `services/my_app/dev.json` deploys the service to the `dev` cluster when the selected Pulumi stack is `dev`:
+
+```json
+{
+  "env": {
+    "APP_ENV": "dev"
+  }
 }
 ```
 
@@ -164,17 +297,17 @@ Each declaration starts with a service name, image, and target clusters:
 If a target does not set `namespace`, the platform uses:
 
 ```text
-<service-name>-<cluster-environment>
+<service-name>
 ```
 
-For example, `my-app` on the `local` dev cluster becomes `my-app-dev`.
+For example, `my-app` on the `dev` cluster becomes `my-app`.
 
 ### Platform defaults and service overrides
 
 Defaults resolve in this order:
 
 ```text
-platform service defaults < environment defaults < service overrides < target cluster overrides
+platform service defaults < environment defaults < service config < stack overlay
 ```
 
 Platform defaults live in `paas_platform/defaults.py`. They include port `80`, one replica, ClusterIP Service behavior, Ingress disabled, readiness probe enabled, NetworkPolicy disabled, and CPU/memory requests and limits.
@@ -183,10 +316,10 @@ Platform defaults live in `paas_platform/defaults.py`. They include port `80`, o
 
 | Platform-owned | Developer-owned |
 | --- | --- |
-| `paas_platform/` | `services/*/service.json` |
+| `paas_platform/` | `services/*/service.json` and `services/*/<stack>.json` |
 | Cluster inventory | Service name and image |
-| Default behavior | Target cluster selection |
-| Deployment logic | Service-level overrides |
+| Default behavior | Stack-specific service overlays |
+| Deployment logic | Service-level and stack-level overrides |
 | Tests | Runtime config names |
 | CI | Secret names, not secret values |
 
@@ -197,19 +330,28 @@ Create `services/my_app/service.json`:
 ```json
 {
   "name": "my-app",
-  "image": "ghcr.io/example/my-app:latest",
-  "targetClusters": ["local"]
+  "image": "ghcr.io/example/my-app:latest"
 }
 ```
 
-Service declarations are auto-discovered from `services/*/service.json`. Run `make preview-diff` to see the resources Pulumi would create, then `make up` to apply them.
+Then create `services/my_app/dev.json`:
+
+```json
+{
+  "env": {
+    "APP_ENV": "dev"
+  }
+}
+```
+
+Service declarations are auto-discovered by combining `service.json` with the overlay matching the selected stack. Run `make stack-select STACK=dev`, then `make preview-diff` to see the resources Pulumi would create, and `make up` to apply them.
 
 Current examples:
 
 | Service | What it shows |
 | --- | --- |
-| `services/nginx/service.json` | Basic web workload with env vars, Pulumi-backed secrets, and NetworkPolicy enabled. |
-| `services/api/service.json` | Custom service/container ports, ConfigMap-backed config, Ingress, and a disabled future target. |
+| `services/nginx/service.json` | Basic web workload with Pulumi-backed secrets and NetworkPolicy enabled. It has both `dev.json` and `staging.json` overlays. |
+| `services/api/service.json` | Custom service/container ports, ConfigMap-backed config, and Ingress. |
 | `services/worker/service.json` | Deployment-only workload with Kubernetes Service and readiness probe disabled. |
 
 ## Service configuration reference
@@ -221,9 +363,8 @@ Current examples:
   "name": "api",
   "image": "httpd:2.4-alpine",
   "env": {
-    "APP_ENV": "dev"
-  },
-  "targetClusters": ["local"]
+    "SERVICE_ROLE": "api"
+  }
 }
 ```
 
@@ -231,23 +372,19 @@ Current examples:
 - `image` becomes the container image.
 - `env` adds literal container environment variables.
 
-### Target clusters
+### Stack overlays
 
-Targets can be strings or objects:
+Overlay files are named after cluster targets. For example, `dev.json` deploys to the `dev` cluster and `staging.json` deploys to the `staging` cluster.
 
 ```json
 {
-  "targetClusters": [
-    "local",
-    {
-      "name": "future-cluster",
-      "enabled": false
-    }
-  ]
+  "env": {
+    "APP_ENV": "dev"
+  }
 }
 ```
 
-Object targets can override service settings for one cluster, including `namespace`, `replicas`, `image`, `env`, `config`, `secrets`, `service`, `ingress`, `readinessProbe`, `resources`, and `networkPolicy`.
+Overlays can override service settings for one stack, including `namespace`, `replicas`, `image`, `env`, `config`, `secrets`, `service`, `ingress`, `readinessProbe`, `resources`, and `networkPolicy`.
 
 ### Ports
 
@@ -400,7 +537,7 @@ Secret values live in encrypted Pulumi stack config. If `secrets` is present, th
 Set a local stack secret with:
 
 ```bash
-SECRET_VALUE='postgres://dev.example' make set-secret ENV=dev SERVICE=api SECRET_KEY=DATABASE_URL
+SECRET_VALUE='<api-database-url>' make set-secret STACK=dev SERVICE=api SECRET_KEY=DATABASE_URL
 ```
 
 Do not commit secret values to service declarations.
@@ -410,10 +547,11 @@ Do not commit secret values to service declarations.
 Secrets are split between developer declarations and stack config:
 
 - `services/*/service.json` declares the names the service expects.
+- `services/*/<stack>.json` declares stack-specific runtime settings.
 - Pulumi stack config stores the encrypted values for each environment.
 - Kubernetes Secret resources are created from Pulumi stack config at deployment time.
 
-For multiple environments, prefer one stack per environment. For example, a `dev` stack stores dev secrets and a future `staging` stack stores staging secrets under the same service/key names.
+Use one stack per environment. For example, the `dev` stack stores dev secrets and the `staging` stack stores staging secrets under the same service/key names.
 
 ## Testing and quality
 
@@ -448,11 +586,18 @@ The GitHub Actions workflow in `.github/workflows/logic-tests.yml` runs compile 
 
 | Command | What it does |
 | --- | --- |
+| `make launch-clusters` | Create the `dev` and `staging` kind clusters if missing. |
+| `make cluster-dev` | Create the `dev` kind cluster if missing. |
+| `make cluster-staging` | Create the `staging` kind cluster if missing. |
 | `make install-dev` | Install runtime and dev dependencies with `uv sync`. |
+| `make stack-init STACK=dev` | Initialize a Pulumi stack. Run once per stack. |
+| `make stack-select STACK=dev` | Select the Pulumi stack whose overlay files should deploy. |
+| `make stack-rm STACK=dev` | Remove a disposable local Pulumi stack. |
+| `make set-secret STACK=dev SERVICE=nginx SECRET_KEY=DUMMY_SECRET` | Set one encrypted Pulumi secret from `SECRET_VALUE`. |
 | `make preview-diff` | Run `pulumi preview --diff`. |
-| `make up` | Apply changes with `pulumi up --diff`. |
+| `make up` | Apply changes with `pulumi up --diff --yes`. |
 | `make destroy` | Destroy stack resources with `pulumi destroy --diff`. |
-| `make kube-all` | List resources in `NAMESPACE`, default `nginx-dev`. |
+| `make kube-all` | List resources in `NAMESPACE`, default `nginx`. |
 | `make port-forward` | Forward `LOCAL_PORT` to `SERVICE`, default `nginx` on `8080:80`. |
 | `make test` | Run Pulumi mock tests. |
 | `make coverage` | Run tests with terminal coverage and `--cov-fail-under=100`. |
@@ -472,27 +617,65 @@ export PULUMI_CONFIG_PASSPHRASE=local-dev-only
 
 ### No stack selected
 
-Select the local `dev` stack:
+Initialize the stack once if it does not already exist:
 
 ```bash
-make stack-select
+make stack-init STACK=dev
+make stack-init STACK=staging
+```
+
+Then select the stack you want to deploy:
+
+```bash
+make stack-select STACK=dev
+make stack-select STACK=staging
 ```
 
 Raw equivalent:
 
 ```bash
+PULUMI_CONFIG_PASSPHRASE=local-dev-only pulumi stack init dev
+PULUMI_CONFIG_PASSPHRASE=local-dev-only pulumi stack init staging
 PULUMI_CONFIG_PASSPHRASE=local-dev-only pulumi stack select dev
+PULUMI_CONFIG_PASSPHRASE=local-dev-only pulumi stack select staging
 ```
 
 ### kind context not found
 
-The `local` cluster target expects kube context `kind-local`. Check your contexts:
+The `dev` cluster target expects kube context `kind-dev`. Check your contexts:
 
 ```bash
 kubectl config get-contexts
 ```
 
 Create or switch to a matching kind cluster before running Pulumi.
+
+```bash
+make launch-clusters
+```
+
+### Kubernetes resource already exists
+
+If `pulumi preview` or `pulumi up` reports that namespaces, Deployments, Services, or other resources already exist, the live kind cluster has resources that are not tracked in the selected Pulumi stack. This can happen after a partial failed update, a stack reset, or a resource-name refactor.
+
+For a disposable kind lab, the simplest recovery is to delete the affected namespaces and run `make up` again:
+
+```bash
+kubectl --context kind-dev delete namespace api nginx worker
+make up
+```
+
+For non-disposable environments, import the existing Kubernetes resources into Pulumi state instead of deleting them.
+
+### Pulumi waits for LoadBalancer IP
+
+Plain kind clusters do not allocate external IPs for `LoadBalancer` Services by default. If Pulumi is stuck on `Attempting to allocate IP address to Service`, stop the update and avoid `LoadBalancer` for local kind clusters unless you have installed a load balancer integration such as MetalLB or cloud-provider-kind.
+
+This playground defaults both `dev` and `staging` Services to `ClusterIP`. If a previous update is still marked in progress after stopping it, clear the Pulumi lock with:
+
+```bash
+pulumi cancel
+```
 
 ### Ingress does not work locally
 
@@ -505,7 +688,7 @@ For a quick local check, use `make port-forward` instead of Ingress.
 If a service declares a secret name, Pulumi requires a matching stack config entry:
 
 ```bash
-SECRET_VALUE='value-for-local-dev' make set-secret ENV=dev SERVICE=api SECRET_KEY=DATABASE_URL
+SECRET_VALUE='<api-database-url>' make set-secret STACK=dev SERVICE=api SECRET_KEY=DATABASE_URL
 ```
 
 The config key format is `<service>:<secret-name>`.
