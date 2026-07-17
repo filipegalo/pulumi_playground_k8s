@@ -13,3 +13,4 @@ htmlcov/
 .pulumi/
 dist/
 *.log
+temp/
