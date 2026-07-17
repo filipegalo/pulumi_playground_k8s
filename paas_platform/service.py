@@ -10,6 +10,7 @@ from .labels import selector_labels as _selector_labels
 from .resources import (
     create_config_map,
     create_deployment,
+    create_helm_release,
     create_ingress,
     create_namespace,
     create_network_policy,
@@ -62,6 +63,30 @@ def _deploy_to_cluster(service: dict[str, Any], cluster: dict[str, Any]) -> dict
         provider,
         resource_names,
     )
+
+    if service.get("type") == "helm":
+        helm_release = create_helm_release(
+            service_name,
+            cluster_name,
+            namespace,
+            provider,
+            service["helm"],
+            resource_names,
+        )
+        return {
+            "cluster": cluster_name,
+            "context": context,
+            "environment": environment,
+            "namespace": namespace.metadata["name"],
+            "helmRelease": helm_release.name,
+            "deployment": None,
+            "configMap": None,
+            "secret": None,
+            "service": None,
+            "ingress": None,
+            "networkPolicy": None,
+        }
+
     config_map = create_config_map(
         service_name,
         cluster_name,

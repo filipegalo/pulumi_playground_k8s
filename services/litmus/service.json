@@ -1,0 +1,17 @@
+{
+  "name": "chaos",
+  "type": "helm",
+  "helm": {
+    "chart": "litmus",
+    "repository": "https://litmuschaos.github.io/litmus-helm/",
+    "values": {
+      "portal": {
+        "frontend": {
+          "service": {
+            "type": "ClusterIP"
+          }
+        }
+      }
+    }
+  }
+}

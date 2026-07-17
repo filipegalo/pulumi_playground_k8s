@@ -353,6 +353,7 @@ Current examples:
 | `services/nginx/service.json` | Basic web workload with Pulumi-backed secrets and NetworkPolicy enabled. It has both `dev.json` and `staging.json` overlays. |
 | `services/api/service.json` | Custom service/container ports, ConfigMap-backed config, and Ingress. |
 | `services/worker/service.json` | Deployment-only workload with Kubernetes Service and readiness probe disabled. |
+| `services/litmus/service.json` | Helm chart workload for Litmus ChaosCenter with local-kind values in `dev.json`. |
 
 ## Service configuration reference
 
@@ -384,7 +385,7 @@ Overlay files are named after cluster targets. For example, `dev.json` deploys t
 }
 ```
 
-Overlays can override service settings for one stack, including `namespace`, `replicas`, `image`, `env`, `config`, `secrets`, `service`, `ingress`, `readinessProbe`, `resources`, and `networkPolicy`.
+Overlays can override service settings for one stack, including `namespace`, `type`, `replicas`, `image`, `env`, `config`, `secrets`, `service`, `ingress`, `readinessProbe`, `resources`, `networkPolicy`, and `helm`.
 
 ### Ports
 
@@ -406,6 +407,58 @@ Overlays can override service settings for one stack, including `namespace`, `re
 ```
 
 The platform default is one replica for `dev` and two replicas for `staging`.
+
+### Helm chart services
+
+Set `type` to `helm` when a service should be deployed from a Helm chart instead of the platform's generated Deployment and Service resources.
+
+```json
+{
+  "name": "chaos",
+  "type": "helm",
+  "helm": {
+    "chart": "litmus",
+    "repository": "https://litmuschaos.github.io/litmus-helm/",
+    "values": {
+      "portal": {
+        "frontend": {
+          "service": {
+            "type": "ClusterIP"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Stack overlays can set the namespace and deep-merge chart values. The checked-in Litmus dev overlay installs ChaosCenter into the `litmus` namespace and uses the local-cluster values from the Helm install guide:
+
+```json
+{
+  "namespace": "litmus",
+  "helm": {
+    "values": {
+      "portal": {
+        "frontend": {
+          "service": {
+            "type": "NodePort"
+          }
+        },
+        "server": {
+          "graphqlServer": {
+            "genericEnv": {
+              "CHAOS_CENTER_UI_ENDPOINT": "http://chaos-litmus-frontend-service.litmus.svc.cluster.local:9091"
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Supported Helm options include `chart`, `repository`, `repositoryOpts`, `releaseName`, `values`, `version`, `timeout`, `skipAwait`, `skipCrds`, `dependencyUpdate`, `atomic`, and the other Pulumi Helm release flags exposed in `paas_platform/resources.py`.
 
 ### Kubernetes service
 

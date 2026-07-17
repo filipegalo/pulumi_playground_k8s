@@ -3,8 +3,12 @@ from typing import Any
 
 
 SERVICE_DEFAULTS = {
+    "type": "container",
     "port": 80,
     "replicas": 1,
+    "helm": {
+        "values": {},
+    },
     "service": {
         "enabled": True,
         "type": "ClusterIP",
@@ -88,6 +92,7 @@ TARGET_SERVICE_OVERRIDE_KEYS = frozenset(
         "config",
         "containerPort",
         "env",
+        "helm",
         "image",
         "ingress",
         "networkPolicy",
@@ -97,6 +102,7 @@ TARGET_SERVICE_OVERRIDE_KEYS = frozenset(
         "resources",
         "secrets",
         "service",
+        "type",
     ]
 )
 

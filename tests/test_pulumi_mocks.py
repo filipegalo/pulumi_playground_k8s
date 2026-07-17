@@ -8,6 +8,7 @@ from pulumi.runtime import MockCallArgs, MockResourceArgs, Mocks, set_mocks
 from pulumi.runtime.config import set_all_config
 
 from paas_platform.defaults import service_config
+from paas_platform.resources import _repository_opts
 from paas_platform.service import (
     _env_from,
     _network_policy_ports,
@@ -74,12 +75,48 @@ def test_load_services_uses_stack_named_target_overlays():
     dev_services = load_services("dev")
     staging_services = load_services("staging")
 
-    assert [service["name"] for service in dev_services] == ["api", "nginx", "worker"]
+    assert [service["name"] for service in dev_services] == ["api", "chaos", "nginx", "worker"]
     assert [service["name"] for service in staging_services] == ["nginx"]
     assert all(
         service["targetClusters"][0]["name"] == "dev"
         for service in dev_services
     )
+    litmus = next(service for service in dev_services if service["name"] == "chaos")
+    assert litmus["type"] == "helm"
+    assert litmus["targetClusters"] == [
+        {
+            "name": "dev",
+            "namespace": "litmus",
+            "helm": {
+                "values": {
+                    "mongodb": {
+                        "image": {
+                            "registry": "docker.io",
+                            "repository": "bitnami/mongodb",
+                            "tag": "latest",
+                        },
+                    },
+                    "portal": {
+                        "frontend": {
+                            "service": {
+                                "type": "NodePort",
+                            },
+                        },
+                        "server": {
+                            "graphqlServer": {
+                                "genericEnv": {
+                                    "CHAOS_CENTER_UI_ENDPOINT": (
+                                        "http://chaos-litmus-frontend-service."
+                                        "litmus.svc.cluster.local:9091"
+                                    ),
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    ]
     assert staging_services[0]["targetClusters"] == [
         {
             "name": "staging",
@@ -696,6 +733,140 @@ def test_secret_config_names_merge_service_and_cluster_without_duplicates():
         "API_TOKEN",
         "WEBHOOK_SECRET",
     ]
+
+
+def test_repository_opts_supports_repo_alias():
+    assert _repository_opts(
+        {
+            "repositoryOpts": {
+                "username": "bot",
+            },
+            "repo": "https://charts.example.com",
+        }
+    ) == {
+        "username": "bot",
+        "repo": "https://charts.example.com",
+    }
+
+
+@pulumi.runtime.test
+def test_helm_service_creates_namespace_and_release_without_container_resources():
+    outputs = deploy_service(
+        {
+            "name": "chaos",
+            "type": "helm",
+            "helm": {
+                "chart": "litmus",
+                "repository": "https://litmuschaos.github.io/litmus-helm/",
+                "version": "3.21.0",
+                "values": {
+                    "portal": {
+                        "frontend": {
+                            "service": {
+                                "type": "ClusterIP",
+                            },
+                        },
+                    },
+                },
+            },
+            "targetClusters": [
+                {
+                    "name": "dev",
+                    "namespace": "litmus",
+                    "helm": {
+                        "values": {
+                            "portal": {
+                                "frontend": {
+                                    "service": {
+                                        "type": "NodePort",
+                                    },
+                                },
+                                "server": {
+                                    "graphqlServer": {
+                                        "genericEnv": {
+                                            "CHAOS_CENTER_UI_ENDPOINT": (
+                                                "http://chaos-litmus-frontend-service."
+                                                "litmus.svc.cluster.local:9091"
+                                            ),
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            ],
+        }
+    )
+
+    def check_outputs(args: list[Any]) -> None:
+        namespace, helm_release, deployment, service = args
+
+        assert namespace == "litmus"
+        assert helm_release == "chaos"
+        assert deployment is None
+        assert service is None
+
+        namespaces = [
+            resource
+            for resource in _resources_by_type("kubernetes:core/v1:Namespace")
+            if resource["name"] == "chaos-dev-namespace"
+        ]
+        releases = [
+            resource
+            for resource in mocks.resources
+            if resource["name"] == "chaos-dev-helm-release"
+        ]
+        deployments = [
+            resource
+            for resource in _resources_by_type("kubernetes:apps/v1:Deployment")
+            if resource["name"] == "chaos-dev-deployment"
+        ]
+        services = [
+            resource
+            for resource in _resources_by_type("kubernetes:core/v1:Service")
+            if resource["name"] == "chaos-dev-service"
+        ]
+
+        assert len(namespaces) == 1
+        assert len(releases) == 1
+        assert len(deployments) == 0
+        assert len(services) == 0
+
+        release_inputs = releases[0]["inputs"]
+        assert release_inputs["chart"] == "litmus"
+        assert release_inputs["name"] == "chaos"
+        assert release_inputs["namespace"] == "litmus"
+        assert release_inputs["version"] == "3.21.0"
+        assert release_inputs["repositoryOpts"]["repo"] == (
+            "https://litmuschaos.github.io/litmus-helm/"
+        )
+        assert release_inputs["values"] == {
+            "portal": {
+                "frontend": {
+                    "service": {
+                        "type": "NodePort",
+                    },
+                },
+                "server": {
+                    "graphqlServer": {
+                        "genericEnv": {
+                            "CHAOS_CENTER_UI_ENDPOINT": (
+                                "http://chaos-litmus-frontend-service."
+                                "litmus.svc.cluster.local:9091"
+                            ),
+                        },
+                    },
+                },
+            },
+        }
+
+    return pulumi.Output.all(
+        outputs[0]["namespace"],
+        outputs[0]["helmRelease"],
+        outputs[0]["deployment"],
+        outputs[0]["service"],
+    ).apply(check_outputs)
 
 
 def test_env_from_references_config_map_and_secret_names():

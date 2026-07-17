@@ -6,6 +6,39 @@ import pulumi_kubernetes as k8s
 from .clusters import PLATFORM_LABELS
 from .container import container_spec
 
+HELM_RELEASE_OPTION_KEYS = {
+    "allowNullValues": "allow_null_values",
+    "atomic": "atomic",
+    "cleanupOnFail": "cleanup_on_fail",
+    "compat": "compat",
+    "createNamespace": "create_namespace",
+    "dependencyUpdate": "dependency_update",
+    "description": "description",
+    "devel": "devel",
+    "disableCrdHooks": "disable_crd_hooks",
+    "disableOpenapiValidation": "disable_openapi_validation",
+    "disableWebhooks": "disable_webhooks",
+    "forceUpdate": "force_update",
+    "keyring": "keyring",
+    "lint": "lint",
+    "maxHistory": "max_history",
+    "postrender": "postrender",
+    "recreatePods": "recreate_pods",
+    "renderSubchartNotes": "render_subchart_notes",
+    "replace": "replace",
+    "resetValues": "reset_values",
+    "resourceNames": "resource_names",
+    "reuseValues": "reuse_values",
+    "skipAwait": "skip_await",
+    "skipCrds": "skip_crds",
+    "takeOwnership": "take_ownership",
+    "timeout": "timeout",
+    "valueYamlFiles": "value_yaml_files",
+    "verify": "verify",
+    "version": "version",
+    "waitForJobs": "wait_for_jobs",
+}
+
 
 def create_provider(
     service_name: str,
@@ -38,6 +71,48 @@ def create_namespace(
         },
         opts=pulumi.ResourceOptions(provider=provider),
     )
+
+
+def create_helm_release(
+    service_name: str,
+    cluster_name: str,
+    namespace: k8s.core.v1.Namespace,
+    provider: k8s.Provider,
+    helm_config: dict[str, Any],
+    resource_names: dict[str, str],
+) -> k8s.helm.v3.Release:
+    repository_opts = _repository_opts(helm_config)
+    release_args: dict[str, Any] = {
+        "chart": helm_config["chart"],
+        "name": helm_config.get("releaseName", service_name),
+        "namespace": namespace.metadata["name"],
+        "values": helm_config.get("values", {}),
+    }
+
+    if repository_opts:
+        release_args["repository_opts"] = k8s.helm.v3.RepositoryOptsArgs(
+            **repository_opts,
+        )
+
+    for config_key, release_key in HELM_RELEASE_OPTION_KEYS.items():
+        if config_key in helm_config:
+            release_args[release_key] = helm_config[config_key]
+
+    return k8s.helm.v3.Release(
+        resource_names.get("helmRelease", f"{service_name}-{cluster_name}-helm-release"),
+        **release_args,
+        opts=pulumi.ResourceOptions(provider=provider, depends_on=[namespace]),
+    )
+
+
+def _repository_opts(helm_config: dict[str, Any]) -> dict[str, Any]:
+    repository_opts = dict(helm_config.get("repositoryOpts", {}))
+    if "repository" in helm_config:
+        repository_opts["repo"] = helm_config["repository"]
+    if "repo" in helm_config:
+        repository_opts["repo"] = helm_config["repo"]
+
+    return repository_opts
 
 
 def create_config_map(
