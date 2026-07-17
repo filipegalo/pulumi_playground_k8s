@@ -1,6 +1,7 @@
 from typing import Any
 
 from paas_platform.defaults import service_config
+from paas_platform.labels import metadata_labels
 from paas_platform.resources import (
     create_namespace,
     create_provider,
@@ -52,7 +53,7 @@ def deploy_gitops_prerequisites(services: list[dict[str, Any]]) -> dict[str, Any
                 service_name,
                 cluster_name,
                 namespace,
-                {},
+                metadata_labels(service_name, cluster["environment"]),
                 provider,
                 secrets,
                 resource_names,

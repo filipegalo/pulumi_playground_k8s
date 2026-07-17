@@ -6,7 +6,13 @@ CLUSTERS = {
         "paas": {
             "argocd": {
                 "enabled": True,
+                "managementCluster": "cicd",
                 "namespace": "argocd",
+                "destination": {
+                    "name": "dev",
+                    "server": "https://dev-control-plane:6443",
+                    "clusterRoleName": "cluster-admin",
+                },
                 "repository": {
                     "url": "https://github.com/filipegalo/pulumi_playground_k8s.git",
                     "targetRevision": "master",
@@ -24,6 +30,11 @@ CLUSTERS = {
                 "enabled": False,
             },
         },
+    },
+    "cicd": {
+        "name": "cicd",
+        "context": "kind-cicd",
+        "environment": "platform",
     },
 }
 

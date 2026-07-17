@@ -10,6 +10,7 @@ SERVICE_PORT ?= 80
 SECRET_KEY ?= DUMMY_SECRET
 DEV_CLUSTER ?= dev
 STAGING_CLUSTER ?= staging
+CICD_CLUSTER ?= cicd
 UV_CACHE_DIR ?= .uv-cache
 PYTHONPATH ?= .
 export UV_CACHE_DIR
@@ -21,7 +22,7 @@ PYTHON := $(UV) run python
 PYTEST := $(UV) run pytest
 PULUMI := PULUMI_CONFIG_PASSPHRASE=$(PULUMI_CONFIG_PASSPHRASE) pulumi
 
-.PHONY: help setup install install-dev cluster-dev cluster-staging launch-clusters login stack-init stack-select set-secret preview preview-diff up destroy stack-rm compile test coverage coverage-html generate-gitops check-gitops pre-commit-install pre-commit validate kube-context kube-nodes kube-all port-forward clean
+.PHONY: help setup install install-dev cluster-dev cluster-staging cluster-cicd launch-clusters login stack-init stack-select set-secret preview preview-diff up destroy stack-rm compile test coverage coverage-html generate-gitops check-gitops pre-commit-install pre-commit validate kube-context kube-nodes kube-all port-forward clean
 
 help:
 	@echo "Useful commands:"
@@ -31,6 +32,7 @@ help:
 	@echo "  make launch-clusters  Create dev and staging kind clusters"
 	@echo "  make cluster-dev      Create kind cluster DEV_CLUSTER=$(DEV_CLUSTER)"
 	@echo "  make cluster-staging  Create kind cluster STAGING_CLUSTER=$(STAGING_CLUSTER)"
+	@echo "  make cluster-cicd     Create CI/CD management cluster CICD_CLUSTER=$(CICD_CLUSTER)"
 	@echo "  make login          Use Pulumi local backend"
 	@echo "  make stack-init     Initialize Pulumi stack, default STACK=$(STACK)"
 	@echo "  make stack-select   Select Pulumi stack, default STACK=$(STACK)"
@@ -76,8 +78,15 @@ cluster-staging:
 		$(KIND) create cluster --name $(STAGING_CLUSTER); \
 	fi
 
-launch-clusters: cluster-dev cluster-staging
-	@echo "kind clusters ready: $(DEV_CLUSTER), $(STAGING_CLUSTER)"
+cluster-cicd:
+	@if $(KIND) get clusters | grep -qx "$(CICD_CLUSTER)"; then \
+		echo "kind cluster $(CICD_CLUSTER) already exists"; \
+	else \
+		$(KIND) create cluster --name $(CICD_CLUSTER); \
+	fi
+
+launch-clusters: cluster-dev cluster-staging cluster-cicd
+	@echo "kind clusters ready: $(DEV_CLUSTER), $(STAGING_CLUSTER), $(CICD_CLUSTER)"
 
 login:
 	pulumi login --local

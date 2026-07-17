@@ -2,13 +2,33 @@ name: Logic Tests
 
 on:
   pull_request:
-    paths-ignore:
+    paths:
+      - ".github/workflows/logic-tests.yml"
+      - "gitops/**"
+      - "paas/**"
+      - "paas_platform/**"
+      - "scripts/generate_gitops.py"
       - "services/**"
+      - "tests/**"
+      - "__main__.py"
+      - "Makefile"
+      - "pyproject.toml"
+      - "uv.lock"
   push:
     branches:
       - master
-    paths-ignore:
+    paths:
+      - ".github/workflows/logic-tests.yml"
+      - "gitops/**"
+      - "paas/**"
+      - "paas_platform/**"
+      - "scripts/generate_gitops.py"
       - "services/**"
+      - "tests/**"
+      - "__main__.py"
+      - "Makefile"
+      - "pyproject.toml"
+      - "uv.lock"
 
 jobs:
   tests:
@@ -31,6 +51,9 @@ jobs:
 
       - name: Sync dependencies
         run: uv sync
+
+      - name: Check generated GitOps applications
+        run: make check-gitops
 
       - name: Compile
         run: make compile

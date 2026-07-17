@@ -270,6 +270,7 @@ Clusters are platform-owned in `paas_platform/clusters.py`. A service selects cl
 | --- | --- | --- |
 | `dev` | `kind-dev` | `dev` |
 | `staging` | `kind-staging` | `staging` |
+| `cicd` | `kind-cicd` | `platform` |
 
 ### Per-cluster Argo CD
 
@@ -283,13 +284,30 @@ Argo CD is a platform service declared under `paas/argocd`, not a developer serv
     "paas": {
         "argocd": {
             "enabled": True,
+            "managementCluster": "cicd",
             "namespace": "argocd",
+            "destination": {
+                "name": "dev",
+                "server": "https://dev-control-plane:6443",
+                "clusterRoleName": "cluster-admin",
+            },
         },
     },
 }
 ```
 
-Set `enabled` to `False`, or omit the component from that cluster's `paas` map, to leave it uninstalled. The selected Pulumi stack deploys only the PaaS services enabled for its matching cluster. PaaS outputs are exported under `paas`, independently from application outputs under `services`.
+Set `enabled` to `False`, or omit the component from that cluster's `paas` map, to leave it uninstalled. `managementCluster` selects where Argo CD itself runs; `destination` selects the workload cluster. Omitting both preserves the same-cluster behavior. PaaS outputs are exported under `paas`, independently from application outputs under `services`.
+
+For the checked-in `dev` configuration, the topology is:
+
+```text
+kind-cicd
+└── Argo CD / registry
+    └── registered destination: dev
+        └── workloads in kind-dev
+```
+
+Create all three local clusters with `make launch-clusters`, or create only the management cluster with `make cluster-cicd`. The registration uses the Kind-internal API endpoint because a host kubeconfig endpoint such as `127.0.0.1:<port>` is unreachable from Argo CD pods.
 
 When Argo CD is enabled, Pulumi installs Argo CD and creates one root `Application` named `registry`. Pulumi no longer deploys application Deployments, Services, Ingresses, or NetworkPolicies for that cluster. The `registry` application reads `gitops/clusters/<cluster>/registry` and creates one child Argo CD application per service:
 
@@ -311,7 +329,9 @@ make generate-gitops STACK=dev
 
 `make check-gitops` and the pre-commit hook fail when the committed child applications no longer match the service declarations. Adding a service therefore requires its normal declaration and overlay plus the generated files from the command above, without duplicating configuration by hand.
 
-Secrets are deliberately excluded from Git. Pulumi continues to create only the namespaces and Secrets required by GitOps workloads, while Argo CD owns the workloads themselves.
+Secrets are deliberately excluded from Git. Pulumi continues to create only the namespaces and Secrets required by GitOps workloads in the workload cluster, while Argo CD owns the workloads themselves.
+
+Pulumi registers the workload cluster declaratively. It creates an `argocd-manager` service account and token in the workload cluster and an encrypted Argo CD cluster Secret in the management cluster. This playground binds `cluster-admin` because example Helm charts can create cluster-scoped resources. Production installations should set `destination.clusterRoleName` to a constrained role appropriate for their workloads.
 
 #### Public and private Git repositories
 
@@ -356,7 +376,7 @@ Pulumi creates the correctly labelled Argo CD repository Secret in the `argocd` 
 
 ### Service declarations
 
-`services/__init__.py` auto-discovers shared service declarations from `services/*/service.json` and combines them with the overlay file matching the selected Pulumi stack. `__main__.py` deploys each discovered service with `paas_platform.deploy_service`.
+`services/__init__.py` auto-discovers shared service declarations from `services/*/service.json` and combines them with the overlay file matching the selected Pulumi stack. On Argo-enabled targets, the generator turns those declarations into child Applications; targets without Argo CD continue to deploy through `paas_platform.deploy_service`.
 
 Each shared declaration starts with a service name and image:
 
@@ -718,7 +738,7 @@ make pre-commit-install
 make pre-commit
 ```
 
-The GitHub Actions workflow in `.github/workflows/logic-tests.yml` runs compile and 100% coverage checks for pull requests and pushes that change platform logic. Changes only under `services/**` are ignored by that workflow.
+The GitHub Actions workflow in `.github/workflows/logic-tests.yml` checks that generated GitOps applications are current, compiles Python, and enforces 100% coverage. Changes to service declarations trigger the workflow, so CI fails when `make generate-gitops` was not run before pushing.
 
 ## Common commands
 

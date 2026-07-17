@@ -6,7 +6,10 @@
     "namespace": "argocd",
     "labels": {
       "app.kubernetes.io/part-of": "registry"
-    }
+    },
+    "finalizers": [
+      "resources-finalizer.argocd.argoproj.io"
+    ]
   },
   "spec": {
     "project": "default",
@@ -20,8 +23,8 @@
       }
     },
     "destination": {
-      "server": "https://kubernetes.default.svc",
-      "namespace": "api"
+      "namespace": "api",
+      "name": "dev"
     },
     "syncPolicy": {
       "automated": {

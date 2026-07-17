@@ -12,7 +12,12 @@ from pulumi.runtime.config import set_all_config
 import paas
 import paas.argocd as argocd
 from paas import load_paas_services
-from paas.argocd import deploy_argocd, is_argocd_enabled
+from paas.argocd import (
+    _registration_config,
+    destination_config,
+    deploy_argocd,
+    is_argocd_enabled,
+)
 from paas.gitops import deploy_gitops_prerequisites
 from paas_platform.defaults import service_config
 from paas_platform.resources import _repository_opts
@@ -42,7 +47,16 @@ class RecordingMocks(Mocks):
                 "inputs": args.inputs,
             }
         )
-        return f"{args.name}_id", args.inputs
+        outputs = args.inputs
+        if args.name.endswith("-manager-token"):
+            outputs = {
+                **args.inputs,
+                "data": {
+                    "token": "dGVzdC10b2tlbg==",
+                    "ca.crt": "dGVzdC1jYQ==",
+                },
+            }
+        return f"{args.name}_id", outputs
 
     def call(self, args: MockCallArgs) -> tuple[dict[str, Any], None]:
         return args.args, None
@@ -156,6 +170,10 @@ def test_generated_registry_matches_service_declarations():
     } == rendered
 
     api = json.loads(rendered["api.yaml"])
+    assert api["metadata"]["finalizers"] == [
+        "resources-finalizer.argocd.argoproj.io"
+    ]
+    assert api["spec"]["destination"] == {"name": "dev", "namespace": "api"}
     api_values = json.loads(api["spec"]["source"]["helm"]["values"])
     assert api_values["service"]["ports"] == [
         {"name": "http", "port": 8080, "targetPort": 80}
@@ -178,7 +196,13 @@ def test_argocd_is_enabled_per_cluster_as_a_paas_service():
     assert dev_paas[0]["targetClusters"] == [
         {
             "name": "dev",
+            "managementCluster": "cicd",
             "namespace": "argocd",
+            "destination": {
+                "name": "dev",
+                "server": "https://dev-control-plane:6443",
+                "clusterRoleName": "cluster-admin",
+            },
             "repository": {
                 "url": "https://github.com/filipegalo/pulumi_playground_k8s.git",
                 "targetRevision": "master",
@@ -207,20 +231,78 @@ def test_argocd_enablement_is_cluster_specific():
         deploy_argocd("missing")
 
 
+def test_argocd_registration_config_decodes_token_and_preserves_ca():
+    assert json.loads(
+        _registration_config(
+            {
+                "token": "dGVzdC10b2tlbg==",
+                "ca.crt": "dGVzdC1jYQ==",
+            }
+        )
+    ) == {
+        "bearerToken": "test-token",
+        "tlsClientConfig": {
+            "insecure": False,
+            "caData": "dGVzdC1jYQ==",
+        },
+    }
+
+
+def test_remote_argocd_configuration_is_validated(monkeypatch: pytest.MonkeyPatch):
+    invalid_clusters = {
+        **argocd.CLUSTERS,
+        "invalid": {
+            "name": "invalid",
+            "context": "kind-invalid",
+            "environment": "dev",
+            "paas": {
+                "argocd": {
+                    "enabled": True,
+                    "managementCluster": "missing",
+                }
+            },
+        },
+        "invalid-remote": {
+            "name": "invalid-remote",
+            "context": "kind-invalid-remote",
+            "environment": "dev",
+            "paas": {
+                "argocd": {
+                    "enabled": True,
+                    "managementCluster": "cicd",
+                    "destination": {"name": "invalid-remote"},
+                }
+            },
+        },
+    }
+    monkeypatch.setattr(argocd, "CLUSTERS", invalid_clusters)
+    with pytest.raises(ValueError, match="Unknown Argo CD management cluster: missing"):
+        argocd.deploy_argocd("invalid")
+
+    with pytest.raises(ValueError, match="missing: server, clusterRoleName"):
+        destination_config("invalid-remote")
+
+
 @pulumi.runtime.test
 def test_argocd_bootstraps_registry_application_from_git():
     output = deploy_argocd("dev")
 
     def check_output(args: list[Any]) -> None:
-        namespace, release, registry = args
+        namespace, release, registry, management_cluster, destination = args
         assert namespace == "argocd"
         assert release == "argocd"
         assert registry == "registry"
+        assert management_cluster == "cicd"
+        assert destination == {
+            "name": "dev",
+            "server": "https://dev-control-plane:6443",
+            "clusterRoleName": "cluster-admin",
+        }
 
         applications = [
             resource
             for resource in mocks.resources
-            if resource["name"] == "registry-dev-application"
+            if resource["name"] == "registry-dev-cicd-application"
         ]
         repository_secrets = [
             resource
@@ -229,6 +311,40 @@ def test_argocd_bootstraps_registry_application_from_git():
         ]
         assert len(applications) == 1
         assert repository_secrets == []
+        cluster_secrets = [
+            resource
+            for resource in _resources_by_type("kubernetes:core/v1:Secret")
+            if resource["name"] == "argocd-dev-cluster-secret"
+        ]
+        service_accounts = [
+            resource
+            for resource in _resources_by_type("kubernetes:core/v1:ServiceAccount")
+            if resource["name"] == "argocd-dev-manager-service-account"
+        ]
+        bindings = [
+            resource
+            for resource in _resources_by_type(
+                "kubernetes:rbac.authorization.k8s.io/v1:ClusterRoleBinding"
+            )
+            if resource["name"] == "argocd-dev-manager-binding"
+        ]
+        assert len(cluster_secrets) == 1
+        assert len(service_accounts) == 1
+        assert len(bindings) == 1
+        token_secrets = [
+            resource
+            for resource in _resources_by_type("kubernetes:core/v1:Secret")
+            if resource["name"] == "argocd-dev-manager-token"
+        ]
+        assert token_secrets[-1]["inputs"]["metadata"]["annotations"][
+            "pulumi.com/waitFor"
+        ] == "jsonpath={.data.token}"
+        assert cluster_secrets[0]["inputs"]["metadata"]["labels"] == {
+            "argocd.argoproj.io/secret-type": "cluster"
+        }
+        assert applications[0]["inputs"]["metadata"]["finalizers"] == [
+            "resources-finalizer.argocd.argoproj.io"
+        ]
         assert applications[0]["inputs"]["spec"] == {
             "project": "default",
             "source": {
@@ -252,6 +368,8 @@ def test_argocd_bootstraps_registry_application_from_git():
         output["namespace"],
         output["helmRelease"],
         output["registryApplication"],
+        output["managementCluster"],
+        output["destination"],
     ).apply(check_output)
 
 
@@ -316,6 +434,17 @@ def test_gitops_prerequisites_create_only_non_git_secrets():
             if resource["name"] == "nginx-dev-deployment"
         ]
         assert deployments == []
+        secrets = [
+            resource
+            for resource in _resources_by_type("kubernetes:core/v1:Secret")
+            if resource["name"] == "nginx-dev-secret"
+        ]
+        assert secrets[-1]["inputs"]["metadata"]["labels"] == {
+            "app.kubernetes.io/name": "nginx",
+            "app.kubernetes.io/part-of": "pulumi-lab",
+            "app.kubernetes.io/managed-by": "pulumi",
+            "paas.openai.com/environment": "dev",
+        }
 
     assert list(outputs) == ["nginx"]
     return pulumi.Output.all(

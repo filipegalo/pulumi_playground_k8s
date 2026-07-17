@@ -9,7 +9,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from paas.argocd import is_argocd_enabled
+from paas.argocd import destination_config, is_argocd_enabled
 from paas_platform.clusters import CLUSTERS
 from paas_platform.defaults import service_config
 from paas_platform.labels import selector_labels
@@ -114,7 +114,9 @@ def render_registry(cluster_name: str) -> dict[str, str]:
         return {}
 
     cluster = CLUSTERS[cluster_name]
-    repository = cluster["paas"]["argocd"]["repository"]
+    argocd = cluster["paas"]["argocd"]
+    repository = argocd["repository"]
+    destination = destination_config(cluster_name)
     rendered: dict[str, str] = {}
 
     for declaration in load_services(cluster_name):
@@ -134,13 +136,18 @@ def render_registry(cluster_name: str) -> dict[str, str]:
                     "namespace", "argocd"
                 ),
                 "labels": {"app.kubernetes.io/part-of": "registry"},
+                "finalizers": ["resources-finalizer.argocd.argoproj.io"],
             },
             "spec": {
                 "project": repository.get("project", "default"),
                 "source": _application_source(service, repository, cluster_name),
                 "destination": {
-                    "server": "https://kubernetes.default.svc",
                     "namespace": namespace,
+                    **(
+                        {"name": destination["name"]}
+                        if destination.get("name")
+                        else {"server": destination["server"]}
+                    ),
                 },
                 "syncPolicy": _sync_policy(),
             },
