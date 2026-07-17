@@ -1,0 +1,36 @@
+{
+  "apiVersion": "argoproj.io/v1alpha1",
+  "kind": "Application",
+  "metadata": {
+    "name": "chaos",
+    "namespace": "argocd",
+    "labels": {
+      "app.kubernetes.io/part-of": "registry"
+    }
+  },
+  "spec": {
+    "project": "default",
+    "source": {
+      "repoURL": "https://litmuschaos.github.io/litmus-helm/",
+      "chart": "litmus",
+      "targetRevision": "*",
+      "helm": {
+        "releaseName": "chaos",
+        "values": "{\n  \"portal\": {\n    \"frontend\": {\n      \"service\": {\n        \"type\": \"NodePort\"\n      }\n    },\n    \"server\": {\n      \"graphqlServer\": {\n        \"genericEnv\": {\n          \"CHAOS_CENTER_UI_ENDPOINT\": \"http://chaos-litmus-frontend-service.litmus.svc.cluster.local:9091\"\n        }\n      }\n    }\n  },\n  \"mongodb\": {\n    \"image\": {\n      \"registry\": \"docker.io\",\n      \"repository\": \"bitnami/mongodb\",\n      \"tag\": \"latest\"\n    }\n  }\n}"
+      }
+    },
+    "destination": {
+      "server": "https://kubernetes.default.svc",
+      "namespace": "litmus"
+    },
+    "syncPolicy": {
+      "automated": {
+        "prune": true,
+        "selfHeal": true
+      },
+      "syncOptions": [
+        "CreateNamespace=true"
+      ]
+    }
+  }
+}

@@ -291,6 +291,69 @@ Argo CD is a platform service declared under `paas/argocd`, not a developer serv
 
 Set `enabled` to `False`, or omit the component from that cluster's `paas` map, to leave it uninstalled. The selected Pulumi stack deploys only the PaaS services enabled for its matching cluster. PaaS outputs are exported under `paas`, independently from application outputs under `services`.
 
+When Argo CD is enabled, Pulumi installs Argo CD and creates one root `Application` named `registry`. Pulumi no longer deploys application Deployments, Services, Ingresses, or NetworkPolicies for that cluster. The `registry` application reads `gitops/clusters/<cluster>/registry` and creates one child Argo CD application per service:
+
+```text
+registry
+├── api
+├── chaos
+├── nginx
+└── worker
+```
+
+Container applications use the shared chart in `gitops/charts/service`. Helm-based applications can point directly to their external chart repository. The committed GitOps files are the desired state that Argo CD reconciles, so they must be pushed to the configured revision before the cluster can sync them.
+
+Developers do not write child Application YAML manually. Continue adding or changing `services/<name>/service.json` and `services/<name>/<cluster>.json`, then regenerate the derived registry:
+
+```bash
+make generate-gitops STACK=dev
+```
+
+`make check-gitops` and the pre-commit hook fail when the committed child applications no longer match the service declarations. Adding a service therefore requires its normal declaration and overlay plus the generated files from the command above, without duplicating configuration by hand.
+
+Secrets are deliberately excluded from Git. Pulumi continues to create only the namespaces and Secrets required by GitOps workloads, while Argo CD owns the workloads themselves.
+
+#### Public and private Git repositories
+
+A public repository needs only its URL, revision, and registry path:
+
+```python
+"repository": {
+    "url": "https://github.com/example/platform.git",
+    "targetRevision": "main",
+    "registryPath": "gitops/clusters/dev/registry",
+}
+```
+
+For a private HTTPS or SSH repository, add a credential mapping. The values below are Pulumi configuration key names, not credentials:
+
+```python
+"repository": {
+    "url": "https://git.example.com/platform/repository.git",
+    "targetRevision": "main",
+    "registryPath": "gitops/clusters/dev/registry",
+    "credentials": {
+        "secretName": "registry-repository",
+        "configNamespace": "argocd",
+        "usernameConfigKey": "GIT_USERNAME",
+        "passwordConfigKey": "GIT_PASSWORD",
+        # Use this instead of username/password for SSH repositories:
+        # "sshPrivateKeyConfigKey": "GIT_SSH_KEY",
+    },
+}
+```
+
+Store those values encrypted in the matching Pulumi stack:
+
+```bash
+pulumi config set --secret argocd:GIT_USERNAME <username>
+pulumi config set --secret argocd:GIT_PASSWORD <token-or-password>
+# SSH alternative:
+pulumi config set --secret argocd:GIT_SSH_KEY <private-key-value>
+```
+
+Pulumi creates the correctly labelled Argo CD repository Secret in the `argocd` namespace. No repository credential is written into cluster inventory or GitOps manifests.
+
 ### Service declarations
 
 `services/__init__.py` auto-discovers shared service declarations from `services/*/service.json` and combines them with the overlay file matching the selected Pulumi stack. `__main__.py` deploys each discovered service with `paas_platform.deploy_service`.

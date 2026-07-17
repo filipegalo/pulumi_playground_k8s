@@ -3,6 +3,7 @@ repos:
     rev: v6.0.0
     hooks:
       - id: check-yaml
+        exclude: ^gitops/charts/[^/]+/templates/
       - id: check-toml
       - id: end-of-file-fixer
       - id: trailing-whitespace
@@ -11,6 +12,13 @@ repos:
 
   - repo: local
     hooks:
+      - id: generated-gitops
+        name: generated GitOps applications are current
+        entry: make check-gitops
+        language: system
+        pass_filenames: false
+        files: ^(services/|gitops/|scripts/generate_gitops\.py|paas_platform/(clusters|defaults)\.py)
+
       - id: compile-python
         name: compile python
         entry: make compile

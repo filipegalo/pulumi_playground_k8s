@@ -21,7 +21,7 @@ PYTHON := $(UV) run python
 PYTEST := $(UV) run pytest
 PULUMI := PULUMI_CONFIG_PASSPHRASE=$(PULUMI_CONFIG_PASSPHRASE) pulumi
 
-.PHONY: help setup install install-dev cluster-dev cluster-staging launch-clusters login stack-init stack-select set-secret preview preview-diff up destroy stack-rm compile test coverage coverage-html pre-commit-install pre-commit validate kube-context kube-nodes kube-all port-forward clean
+.PHONY: help setup install install-dev cluster-dev cluster-staging launch-clusters login stack-init stack-select set-secret preview preview-diff up destroy stack-rm compile test coverage coverage-html generate-gitops check-gitops pre-commit-install pre-commit validate kube-context kube-nodes kube-all port-forward clean
 
 help:
 	@echo "Useful commands:"
@@ -43,6 +43,8 @@ help:
 	@echo "  make test           Run Pulumi mock tests"
 	@echo "  make coverage       Run tests with terminal coverage report"
 	@echo "  make coverage-html  Run tests and write HTML coverage to htmlcov/"
+	@echo "  make generate-gitops Generate Argo CD child applications from services/"
+	@echo "  make check-gitops    Fail when generated GitOps applications are stale"
 	@echo "  make pre-commit-install Install local git pre-commit hooks"
 	@echo "  make pre-commit     Run pre-commit hooks against all files"
 	@echo "  make validate       Compile, test, and run preview --diff"
@@ -110,7 +112,7 @@ stack-rm:
 	$(PULUMI) stack rm $(STACK)
 
 compile:
-	$(PYTHON) -m py_compile __main__.py paas/__init__.py paas_platform/*.py services/__init__.py
+	$(PYTHON) -m py_compile __main__.py paas/*.py paas/argocd/__init__.py paas_platform/*.py scripts/*.py services/__init__.py
 
 test:
 	$(PYTEST) -q
@@ -120,6 +122,12 @@ coverage:
 
 coverage-html:
 	$(PYTEST) --cov=paas --cov=paas_platform --cov-report=term-missing --cov-report=html --cov-fail-under=100
+
+generate-gitops:
+	$(PYTHON) scripts/generate_gitops.py --cluster $(STACK)
+
+check-gitops:
+	$(PYTHON) scripts/generate_gitops.py --all --check
 
 pre-commit-install:
 	chmod +x .githooks/pre-commit

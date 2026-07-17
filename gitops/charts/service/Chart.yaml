@@ -1,0 +1,5 @@
+apiVersion: v2
+name: paas-service
+description: Generic chart for PaaS-managed container services
+type: application
+version: 0.1.0

@@ -1,4 +1,6 @@
 import asyncio
+import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -8,7 +10,10 @@ from pulumi.runtime import MockCallArgs, MockResourceArgs, Mocks, set_mocks
 from pulumi.runtime.config import set_all_config
 
 import paas
+import paas.argocd as argocd
 from paas import load_paas_services
+from paas.argocd import deploy_argocd, is_argocd_enabled
+from paas.gitops import deploy_gitops_prerequisites
 from paas_platform.defaults import service_config
 from paas_platform.resources import _repository_opts
 from paas_platform.service import (
@@ -20,6 +25,7 @@ from paas_platform.service import (
     deploy_service,
 )
 from services import load_services
+from scripts.generate_gitops import render_registry
 
 asyncio.set_event_loop(asyncio.new_event_loop())
 
@@ -48,10 +54,20 @@ set_all_config(
     {
         "configured-api:DATABASE_URL": "test-database-url",
         "configured-api:API_TOKEN": "test-api-token",
+        "argocd:GIT_USERNAME": "git-user",
+        "argocd:GIT_PASSWORD": "git-password",
+        "argocd:GIT_SSH_KEY": "private-key",
+        "nginx:DUMMY_SECRET": "dummy-secret",
+        "nginx:DUMMY_SECRET_2": "dummy-secret-2",
     },
     secret_keys=[
         "configured-api:DATABASE_URL",
         "configured-api:API_TOKEN",
+        "argocd:GIT_USERNAME",
+        "argocd:GIT_PASSWORD",
+        "argocd:GIT_SSH_KEY",
+        "nginx:DUMMY_SECRET",
+        "nginx:DUMMY_SECRET_2",
     ],
 )
 
@@ -129,6 +145,29 @@ def test_load_services_uses_stack_named_target_overlays():
     ]
 
 
+def test_generated_registry_matches_service_declarations():
+    rendered = render_registry("dev")
+    registry_path = Path("gitops/clusters/dev/registry")
+
+    assert set(rendered) == {"api.yaml", "chaos.yaml", "nginx.yaml", "worker.yaml"}
+    assert {
+        path.name: path.read_text()
+        for path in registry_path.glob("*.yaml")
+    } == rendered
+
+    api = json.loads(rendered["api.yaml"])
+    api_values = json.loads(api["spec"]["source"]["helm"]["values"])
+    assert api_values["service"]["ports"] == [
+        {"name": "http", "port": 8080, "targetPort": 80}
+    ]
+    nginx = json.loads(rendered["nginx.yaml"])
+    nginx_values = json.loads(nginx["spec"]["source"]["helm"]["values"])
+    assert nginx_values["networkPolicy"]["spec"]["policyTypes"] == [
+        "Ingress"
+    ]
+    assert render_registry("staging") == {}
+
+
 def test_argocd_is_enabled_per_cluster_as_a_paas_service():
     dev_paas = load_paas_services("dev")
     staging_paas = load_paas_services("staging")
@@ -140,6 +179,11 @@ def test_argocd_is_enabled_per_cluster_as_a_paas_service():
         {
             "name": "dev",
             "namespace": "argocd",
+            "repository": {
+                "url": "https://github.com/filipegalo/pulumi_playground_k8s.git",
+                "targetRevision": "master",
+                "registryPath": "gitops/clusters/dev/registry",
+            },
         }
     ]
     assert dev_paas[0]["helm"] == {
@@ -152,6 +196,132 @@ def test_argocd_is_enabled_per_cluster_as_a_paas_service():
 def test_loading_paas_for_an_unknown_cluster_raises_clear_error():
     with pytest.raises(ValueError, match="Unknown cluster target: missing"):
         load_paas_services("missing")
+
+
+def test_argocd_enablement_is_cluster_specific():
+    assert is_argocd_enabled("dev") is True
+    assert is_argocd_enabled("staging") is False
+    assert is_argocd_enabled("missing") is False
+    assert deploy_argocd("staging") == {}
+    with pytest.raises(ValueError, match="Unknown cluster target: missing"):
+        deploy_argocd("missing")
+
+
+@pulumi.runtime.test
+def test_argocd_bootstraps_registry_application_from_git():
+    output = deploy_argocd("dev")
+
+    def check_output(args: list[Any]) -> None:
+        namespace, release, registry = args
+        assert namespace == "argocd"
+        assert release == "argocd"
+        assert registry == "registry"
+
+        applications = [
+            resource
+            for resource in mocks.resources
+            if resource["name"] == "registry-dev-application"
+        ]
+        repository_secrets = [
+            resource
+            for resource in _resources_by_type("kubernetes:core/v1:Secret")
+            if resource["name"] == "argocd-dev-repository-secret"
+        ]
+        assert len(applications) == 1
+        assert repository_secrets == []
+        assert applications[0]["inputs"]["spec"] == {
+            "project": "default",
+            "source": {
+                "repoURL": (
+                    "https://github.com/filipegalo/pulumi_playground_k8s.git"
+                ),
+                "targetRevision": "master",
+                "path": "gitops/clusters/dev/registry",
+            },
+            "destination": {
+                "server": "https://kubernetes.default.svc",
+                "namespace": "argocd",
+            },
+            "syncPolicy": {
+                "automated": {"prune": True, "selfHeal": True},
+                "syncOptions": ["CreateNamespace=true"],
+            },
+        }
+
+    return pulumi.Output.all(
+        output["namespace"],
+        output["helmRelease"],
+        output["registryApplication"],
+    ).apply(check_output)
+
+
+@pulumi.runtime.test
+def test_private_argocd_repository_uses_pulumi_backed_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    private_clusters = {
+        **argocd.CLUSTERS,
+        "private": {
+            "name": "private",
+            "context": "kind-private",
+            "environment": "dev",
+            "paas": {
+                "argocd": {
+                    "enabled": True,
+                    "namespace": "argocd",
+                    "repository": {
+                        "url": "https://git.example.com/platform/repository.git",
+                        "registryPath": "gitops/clusters/private/registry",
+                        "credentials": {
+                            "secretName": "private-repository",
+                            "usernameConfigKey": "GIT_USERNAME",
+                            "passwordConfigKey": "GIT_PASSWORD",
+                            "sshPrivateKeyConfigKey": "GIT_SSH_KEY",
+                        },
+                    },
+                },
+            },
+        },
+    }
+    monkeypatch.setattr(argocd, "CLUSTERS", private_clusters)
+    output = argocd.deploy_argocd("private")
+
+    def check_output(registry_name: str) -> None:
+        assert registry_name == "registry"
+        secrets = [
+            resource
+            for resource in _resources_by_type("kubernetes:core/v1:Secret")
+            if resource["name"] == "argocd-private-repository-secret"
+        ]
+        assert len(secrets) == 1
+        assert secrets[0]["inputs"]["metadata"]["name"] == "private-repository"
+        assert secrets[0]["inputs"]["metadata"]["labels"] == {
+            "argocd.argoproj.io/secret-type": "repository"
+        }
+
+    return output["registryApplication"].apply(check_output)
+
+
+@pulumi.runtime.test
+def test_gitops_prerequisites_create_only_non_git_secrets():
+    outputs = deploy_gitops_prerequisites(load_services("dev"))
+
+    def check_outputs(args: list[Any]) -> None:
+        namespace, secret = args
+        assert namespace == "nginx"
+        assert secret == "nginx"
+        deployments = [
+            resource
+            for resource in _resources_by_type("kubernetes:apps/v1:Deployment")
+            if resource["name"] == "nginx-dev-deployment"
+        ]
+        assert deployments == []
+
+    assert list(outputs) == ["nginx"]
+    return pulumi.Output.all(
+        outputs["nginx"]["namespace"],
+        outputs["nginx"]["secret"],
+    ).apply(check_outputs)
 
 
 def test_enabled_paas_service_requires_a_platform_declaration(
@@ -311,7 +481,10 @@ def test_service_defaults_create_namespace_deployment_and_service():
         assert len(services) == 1
         assert len(ingresses) == 0
         assert len(_resources_by_type("kubernetes:core/v1:ConfigMap")) == 0
-        assert len(_resources_by_type("kubernetes:core/v1:Secret")) == 0
+        assert not any(
+            resource["name"] == "default-api-dev-secret"
+            for resource in _resources_by_type("kubernetes:core/v1:Secret")
+        )
         assert len(_resources_by_type("kubernetes:networking.k8s.io/v1:NetworkPolicy")) == 0
 
         namespace_inputs = namespaces[0]["inputs"]

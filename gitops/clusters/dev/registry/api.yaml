@@ -1,0 +1,36 @@
+{
+  "apiVersion": "argoproj.io/v1alpha1",
+  "kind": "Application",
+  "metadata": {
+    "name": "api",
+    "namespace": "argocd",
+    "labels": {
+      "app.kubernetes.io/part-of": "registry"
+    }
+  },
+  "spec": {
+    "project": "default",
+    "source": {
+      "repoURL": "https://github.com/filipegalo/pulumi_playground_k8s.git",
+      "targetRevision": "master",
+      "path": "gitops/charts/service",
+      "helm": {
+        "releaseName": "api",
+        "values": "{\n  \"image\": \"httpd:2.4-alpine\",\n  \"replicas\": 2,\n  \"containerPort\": 80,\n  \"env\": {\n    \"SERVICE_ROLE\": \"api\",\n    \"APP_ENV\": \"dev\"\n  },\n  \"config\": {\n    \"LOG_LEVEL\": \"info\",\n    \"FEATURE_FLAG\": \"platform-examples\"\n  },\n  \"service\": {\n    \"enabled\": true,\n    \"type\": \"ClusterIP\",\n    \"ports\": [\n      {\n        \"name\": \"http\",\n        \"port\": 8080,\n        \"targetPort\": 80\n      }\n    ]\n  },\n  \"ingress\": {\n    \"enabled\": true,\n    \"host\": \"api.localhost\",\n    \"className\": null,\n    \"path\": \"/\",\n    \"pathType\": \"Prefix\",\n    \"servicePort\": 8080,\n    \"annotations\": {\n      \"pulumi.com/skipAwait\": \"true\"\n    }\n  },\n  \"readinessProbe\": {\n    \"enabled\": true,\n    \"path\": \"/\",\n    \"initialDelaySeconds\": 3,\n    \"periodSeconds\": 5\n  },\n  \"resources\": {\n    \"requests\": {\n      \"cpu\": \"25m\",\n      \"memory\": \"32Mi\"\n    },\n    \"limits\": {\n      \"cpu\": \"100m\",\n      \"memory\": \"128Mi\"\n    }\n  },\n  \"networkPolicy\": {\n    \"enabled\": false\n  }\n}"
+      }
+    },
+    "destination": {
+      "server": "https://kubernetes.default.svc",
+      "namespace": "api"
+    },
+    "syncPolicy": {
+      "automated": {
+        "prune": true,
+        "selfHeal": true
+      },
+      "syncOptions": [
+        "CreateNamespace=true"
+      ]
+    }
+  }
+}

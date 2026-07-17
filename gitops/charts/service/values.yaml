@@ -1,0 +1,36 @@
+image: ""
+replicas: 1
+containerPort: 80
+env: {}
+config: {}
+existingSecret: ""
+service:
+  enabled: true
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+ingress:
+  enabled: false
+  host: ""
+  className: null
+  path: /
+  pathType: Prefix
+  servicePort: 80
+  annotations: {}
+readinessProbe:
+  enabled: true
+  path: /
+  initialDelaySeconds: 3
+  periodSeconds: 5
+resources:
+  requests:
+    cpu: 25m
+    memory: 32Mi
+  limits:
+    cpu: 100m
+    memory: 128Mi
+networkPolicy:
+  enabled: false
+  spec: {}

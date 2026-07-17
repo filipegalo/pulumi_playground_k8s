@@ -7,6 +7,11 @@ CLUSTERS = {
             "argocd": {
                 "enabled": True,
                 "namespace": "argocd",
+                "repository": {
+                    "url": "https://github.com/filipegalo/pulumi_playground_k8s.git",
+                    "targetRevision": "master",
+                    "registryPath": "gitops/clusters/dev/registry",
+                },
             },
         },
     },
