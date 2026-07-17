@@ -13,10 +13,14 @@ import paas
 import paas.argocd as argocd
 from paas import load_paas_services
 from paas.argocd import (
+    _admin_password_values,
+    _argocd_helm_config,
     _registration_config,
     destination_config,
     deploy_argocd,
+    deploy_argocd_workload,
     is_argocd_enabled,
+    is_gitops_enabled,
 )
 from paas.gitops import deploy_gitops_prerequisites
 from paas_platform.defaults import service_config
@@ -71,6 +75,8 @@ set_all_config(
         "argocd:GIT_USERNAME": "git-user",
         "argocd:GIT_PASSWORD": "git-password",
         "argocd:GIT_SSH_KEY": "private-key",
+        "argocd:ADMIN_PASSWORD_BCRYPT": "$2a$12$test-admin-password-hash",
+        "argocd:ADMIN_PASSWORD_MTIME": "2026-07-17T16:00:00Z",
         "nginx:DUMMY_SECRET": "dummy-secret",
         "nginx:DUMMY_SECRET_2": "dummy-secret-2",
     },
@@ -80,6 +86,7 @@ set_all_config(
         "argocd:GIT_USERNAME",
         "argocd:GIT_PASSWORD",
         "argocd:GIT_SSH_KEY",
+        "argocd:ADMIN_PASSWORD_BCRYPT",
         "nginx:DUMMY_SECRET",
         "nginx:DUMMY_SECRET_2",
     ],
@@ -107,48 +114,12 @@ def test_load_services_uses_stack_named_target_overlays():
     dev_services = load_services("dev")
     staging_services = load_services("staging")
 
-    assert [service["name"] for service in dev_services] == ["api", "chaos", "nginx", "worker"]
+    assert [service["name"] for service in dev_services] == ["api", "nginx"]
     assert [service["name"] for service in staging_services] == ["nginx"]
     assert all(
         service["targetClusters"][0]["name"] == "dev"
         for service in dev_services
     )
-    litmus = next(service for service in dev_services if service["name"] == "chaos")
-    assert litmus["type"] == "helm"
-    assert litmus["targetClusters"] == [
-        {
-            "name": "dev",
-            "namespace": "litmus",
-            "helm": {
-                "values": {
-                    "mongodb": {
-                        "image": {
-                            "registry": "docker.io",
-                            "repository": "bitnami/mongodb",
-                            "tag": "latest",
-                        },
-                    },
-                    "portal": {
-                        "frontend": {
-                            "service": {
-                                "type": "NodePort",
-                            },
-                        },
-                        "server": {
-                            "graphqlServer": {
-                                "genericEnv": {
-                                    "CHAOS_CENTER_UI_ENDPOINT": (
-                                        "http://chaos-litmus-frontend-service."
-                                        "litmus.svc.cluster.local:9091"
-                                    ),
-                                },
-                            },
-                        },
-                    },
-                },
-            },
-        },
-    ]
     assert staging_services[0]["targetClusters"] == [
         {
             "name": "staging",
@@ -163,13 +134,14 @@ def test_generated_registry_matches_service_declarations():
     rendered = render_registry("dev")
     registry_path = Path("gitops/clusters/dev/registry")
 
-    assert set(rendered) == {"api.yaml", "chaos.yaml", "nginx.yaml", "worker.yaml"}
+    assert set(rendered) == {"api.yaml", "nginx.yaml"}
     assert {
         path.name: path.read_text()
         for path in registry_path.glob("*.yaml")
     } == rendered
 
     api = json.loads(rendered["api.yaml"])
+    assert api["metadata"]["name"] == "api-dev"
     assert api["metadata"]["finalizers"] == [
         "resources-finalizer.argocd.argoproj.io"
     ]
@@ -183,34 +155,40 @@ def test_generated_registry_matches_service_declarations():
     assert nginx_values["networkPolicy"]["spec"]["policyTypes"] == [
         "Ingress"
     ]
-    assert render_registry("staging") == {}
+    staging = json.loads(render_registry("staging")["nginx.yaml"])
+    assert staging["metadata"]["name"] == "nginx-staging"
+    assert json.loads(rendered["nginx.yaml"])["metadata"]["name"] == "nginx-dev"
+    assert staging["spec"]["destination"] == {
+        "name": "staging",
+        "namespace": "nginx",
+    }
 
 
 def test_argocd_is_enabled_per_cluster_as_a_paas_service():
     dev_paas = load_paas_services("dev")
     staging_paas = load_paas_services("staging")
+    cicd_paas = load_paas_services("cicd")
 
-    assert [service["name"] for service in dev_paas] == ["argocd"]
+    assert dev_paas == []
     assert staging_paas == []
-    assert dev_paas[0]["type"] == "helm"
-    assert dev_paas[0]["targetClusters"] == [
+    assert [service["name"] for service in cicd_paas] == ["argocd"]
+    assert cicd_paas[0]["type"] == "helm"
+    assert cicd_paas[0]["targetClusters"] == [
         {
-            "name": "dev",
-            "managementCluster": "cicd",
+            "name": "cicd",
             "namespace": "argocd",
-            "destination": {
-                "name": "dev",
-                "server": "https://dev-control-plane:6443",
-                "clusterRoleName": "cluster-admin",
+            "adminPassword": {
+                "configNamespace": "argocd",
+                "hashConfigKey": "ADMIN_PASSWORD_BCRYPT",
+                "mtimeConfigKey": "ADMIN_PASSWORD_MTIME",
             },
             "repository": {
                 "url": "https://github.com/filipegalo/pulumi_playground_k8s.git",
                 "targetRevision": "master",
-                "registryPath": "gitops/clusters/dev/registry",
             },
         }
     ]
-    assert dev_paas[0]["helm"] == {
+    assert cicd_paas[0]["helm"] == {
         "chart": "argo-cd",
         "repository": "https://argoproj.github.io/argo-helm/",
         "releaseName": "argocd",
@@ -223,12 +201,63 @@ def test_loading_paas_for_an_unknown_cluster_raises_clear_error():
 
 
 def test_argocd_enablement_is_cluster_specific():
-    assert is_argocd_enabled("dev") is True
+    assert is_argocd_enabled("cicd") is True
+    assert is_argocd_enabled("dev") is False
     assert is_argocd_enabled("staging") is False
     assert is_argocd_enabled("missing") is False
-    assert deploy_argocd("staging") == {}
+    assert is_gitops_enabled("dev") is True
+    assert is_gitops_enabled("staging") is True
+    assert is_gitops_enabled("cicd") is False
+    assert is_gitops_enabled("missing") is False
+    assert deploy_argocd("dev") == {}
+    assert deploy_argocd_workload("cicd") == {}
     with pytest.raises(ValueError, match="Unknown cluster target: missing"):
         deploy_argocd("missing")
+    with pytest.raises(ValueError, match="Unknown cluster target: missing"):
+        deploy_argocd_workload("missing")
+
+
+def test_argocd_admin_password_is_optional():
+    assert _admin_password_values({}) == {}
+    assert _argocd_helm_config({}) == {
+        "chart": "argo-cd",
+        "repository": "https://argoproj.github.io/argo-helm/",
+        "releaseName": "argocd",
+        "values": {},
+    }
+
+
+@pulumi.runtime.test
+def test_argocd_admin_password_uses_secret_pulumi_config_and_merges_values():
+    helm_config = _argocd_helm_config(
+        {
+            "adminPassword": {"configNamespace": "argocd"},
+            "helm": {
+                "values": {
+                    "configs": {"secret": {"createSecret": True}},
+                    "server": {"service": {"type": "ClusterIP"}},
+                }
+            },
+        }
+    )
+
+    def check_values(args: list[Any]) -> None:
+        password_hash, password_mtime, password_is_secret = args
+        assert password_hash == "$2a$12$test-admin-password-hash"
+        assert password_mtime == "2026-07-17T16:00:00Z"
+        assert password_is_secret is True
+        assert helm_config["values"]["configs"]["secret"]["createSecret"] is True
+        assert helm_config["values"]["server"] == {
+            "service": {"type": "ClusterIP"}
+        }
+
+    secret_values = helm_config["values"]["configs"]["secret"]
+    password_hash = secret_values["argocdServerAdminPassword"]
+    return pulumi.Output.all(
+        password_hash,
+        secret_values["argocdServerAdminPasswordMtime"],
+        pulumi.Output.from_input(password_hash.is_secret()),
+    ).apply(check_values)
 
 
 def test_argocd_registration_config_decodes_token_and_preserves_ca():
@@ -255,43 +284,58 @@ def test_remote_argocd_configuration_is_validated(monkeypatch: pytest.MonkeyPatc
             "name": "invalid",
             "context": "kind-invalid",
             "environment": "dev",
-            "paas": {
-                "argocd": {
-                    "enabled": True,
-                    "managementCluster": "missing",
-                }
+            "gitops": {
+                "enabled": True,
+                "cicdCluster": "missing",
             },
         },
         "invalid-remote": {
             "name": "invalid-remote",
             "context": "kind-invalid-remote",
             "environment": "dev",
-            "paas": {
-                "argocd": {
-                    "enabled": True,
-                    "managementCluster": "cicd",
-                    "destination": {"name": "invalid-remote"},
-                }
+            "gitops": {
+                "enabled": True,
+                "cicdCluster": "cicd",
+                "destination": {"name": "invalid-remote"},
+                "repository": {"url": "https://example.com/repository.git"},
+            },
+        },
+        "disabled-cicd": {
+            "name": "disabled-cicd",
+            "context": "kind-disabled-cicd",
+            "environment": "platform",
+        },
+        "invalid-disabled": {
+            "name": "invalid-disabled",
+            "context": "kind-invalid-disabled",
+            "environment": "dev",
+            "gitops": {
+                "enabled": True,
+                "cicdCluster": "disabled-cicd",
             },
         },
     }
     monkeypatch.setattr(argocd, "CLUSTERS", invalid_clusters)
-    with pytest.raises(ValueError, match="Unknown Argo CD management cluster: missing"):
-        argocd.deploy_argocd("invalid")
+    with pytest.raises(ValueError, match="Unknown CI/CD cluster: missing"):
+        argocd.deploy_argocd_workload("invalid")
 
     with pytest.raises(ValueError, match="missing: server, clusterRoleName"):
         destination_config("invalid-remote")
 
+    with pytest.raises(ValueError, match="Argo CD is not enabled"):
+        argocd.deploy_argocd_workload("invalid-disabled")
+
 
 @pulumi.runtime.test
 def test_argocd_bootstraps_registry_application_from_git():
-    output = deploy_argocd("dev")
+    platform_output = deploy_argocd("cicd")
+    workload_output = deploy_argocd_workload("dev")
 
     def check_output(args: list[Any]) -> None:
         namespace, release, registry, management_cluster, destination = args
         assert namespace == "argocd"
         assert release == "argocd"
-        assert registry == "registry"
+        assert registry == "registry-dev"
         assert management_cluster == "cicd"
         assert destination == {
             "name": "dev",
@@ -311,6 +355,25 @@ def test_argocd_bootstraps_registry_application_from_git():
         ]
         assert len(applications) == 1
         assert repository_secrets == []
+        releases = [
+            resource
+            for resource in mocks.resources
+            if resource["name"] == "argocd-cicd-helm-release"
+        ]
+        assert len(releases) == 1
+        release_values = releases[0]["inputs"]["values"]
+        assert release_values["value"] == {
+            "configs": {
+                "secret": {
+                    "argocdServerAdminPassword": (
+                        "$2a$12$test-admin-password-hash"
+                    ),
+                    "argocdServerAdminPasswordMtime": (
+                        "2026-07-17T16:00:00Z"
+                    ),
+                }
+            }
+        }
         cluster_secrets = [
             resource
             for resource in _resources_by_type("kubernetes:core/v1:Secret")
@@ -365,11 +428,11 @@ def test_argocd_bootstraps_registry_application_from_git():
         }
 
     return pulumi.Output.all(
-        output["namespace"],
-        output["helmRelease"],
-        output["registryApplication"],
-        output["managementCluster"],
-        output["destination"],
+        platform_output["namespace"],
+        platform_output["helmRelease"],
+        workload_output["registryApplication"],
+        workload_output["cicdCluster"],
+        workload_output["destination"],
     ).apply(check_output)
 
 
@@ -379,17 +442,13 @@ def test_private_argocd_repository_uses_pulumi_backed_credentials(
 ):
     private_clusters = {
         **argocd.CLUSTERS,
-        "private": {
-            "name": "private",
-            "context": "kind-private",
-            "environment": "dev",
+        "cicd": {
+            **argocd.CLUSTERS["cicd"],
             "paas": {
                 "argocd": {
-                    "enabled": True,
-                    "namespace": "argocd",
+                    **argocd.CLUSTERS["cicd"]["paas"]["argocd"],
                     "repository": {
                         "url": "https://git.example.com/platform/repository.git",
-                        "registryPath": "gitops/clusters/private/registry",
                         "credentials": {
                             "secretName": "private-repository",
                             "usernameConfigKey": "GIT_USERNAME",
@@ -402,14 +461,14 @@ def test_private_argocd_repository_uses_pulumi_backed_credentials(
         },
     }
     monkeypatch.setattr(argocd, "CLUSTERS", private_clusters)
-    output = argocd.deploy_argocd("private")
+    output = argocd.deploy_argocd("cicd")
 
-    def check_output(registry_name: str) -> None:
-        assert registry_name == "registry"
+    def check_output(repository_secret_name: str) -> None:
+        assert repository_secret_name == "private-repository"
         secrets = [
             resource
             for resource in _resources_by_type("kubernetes:core/v1:Secret")
-            if resource["name"] == "argocd-private-repository-secret"
+            if resource["name"] == "argocd-cicd-repository-secret"
         ]
         assert len(secrets) == 1
         assert secrets[0]["inputs"]["metadata"]["name"] == "private-repository"
@@ -417,7 +476,7 @@ def test_private_argocd_repository_uses_pulumi_backed_credentials(
             "argocd.argoproj.io/secret-type": "repository"
         }
 
-    return output["registryApplication"].apply(check_output)
+    return output["repositorySecret"].apply(check_output)
 
 
 @pulumi.runtime.test
@@ -460,7 +519,20 @@ def test_enabled_paas_service_requires_a_platform_declaration(
     monkeypatch.setattr(paas, "_PAAS_DIR", tmp_path)
 
     with pytest.raises(ValueError, match="Unknown PaaS service: argocd"):
-        load_paas_services("dev")
+        load_paas_services("cicd")
+
+
+def test_disabled_paas_service_is_skipped(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        paas,
+        "CLUSTERS",
+        {
+            "disabled": {
+                "paas": {"argocd": {"enabled": False}},
+            }
+        },
+    )
+    assert load_paas_services("disabled") == []
 
 
 def test_disabled_target_cluster_is_skipped():

@@ -9,7 +9,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from paas.argocd import destination_config, is_argocd_enabled
+from paas.argocd import destination_config, is_gitops_enabled, repository_config
 from paas_platform.clusters import CLUSTERS
 from paas_platform.defaults import service_config
 from paas_platform.labels import selector_labels
@@ -110,12 +110,14 @@ def _application_source(
 
 
 def render_registry(cluster_name: str) -> dict[str, str]:
-    if not is_argocd_enabled(cluster_name):
+    if not is_gitops_enabled(cluster_name):
         return {}
 
     cluster = CLUSTERS[cluster_name]
-    argocd = cluster["paas"]["argocd"]
-    repository = argocd["repository"]
+    gitops = cluster["gitops"]
+    repository = repository_config(cluster_name)
+    cicd_cluster = CLUSTERS[gitops.get("cicdCluster", "cicd")]
+    argocd = cicd_cluster["paas"]["argocd"]
     destination = destination_config(cluster_name)
     rendered: dict[str, str] = {}
 
@@ -131,10 +133,8 @@ def render_registry(cluster_name: str) -> dict[str, str]:
             "apiVersion": "argoproj.io/v1alpha1",
             "kind": "Application",
             "metadata": {
-                "name": service["name"],
-                "namespace": cluster["paas"]["argocd"].get(
-                    "namespace", "argocd"
-                ),
+                "name": f"{service['name']}-{cluster_name}",
+                "namespace": argocd.get("namespace", "argocd"),
                 "labels": {"app.kubernetes.io/part-of": "registry"},
                 "finalizers": ["resources-finalizer.argocd.argoproj.io"],
             },
@@ -158,8 +158,7 @@ def render_registry(cluster_name: str) -> dict[str, str]:
 
 
 def write_registry(cluster_name: str, check: bool = False) -> bool:
-    config = CLUSTERS[cluster_name]["paas"]["argocd"]["repository"]
-    destination = _ROOT / config["registryPath"]
+    destination = _ROOT / CLUSTERS[cluster_name]["gitops"]["registryPath"]
     rendered = render_registry(cluster_name)
     existing = (
         {path.name: path.read_text() for path in destination.glob("*.yaml")}
@@ -185,7 +184,7 @@ def main() -> int:
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
     clusters = (
-        [name for name in CLUSTERS if is_argocd_enabled(name)]
+        [name for name in CLUSTERS if is_gitops_enabled(name)]
         if args.all
         else [args.cluster]
     )

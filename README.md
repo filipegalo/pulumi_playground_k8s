@@ -30,7 +30,7 @@ Pulumi Playground K8s is a Pulumi + Kubernetes playground that models a tiny Paa
 
 - Auto-discovered service declarations from `services/*/service.json` plus stack-specific overlays such as `dev.json` and `staging.json`
 - Cluster targeting from a platform-owned inventory
-- Per-cluster PaaS services, including optional Argo CD
+- A dedicated CI/CD PaaS stack with independent workload stacks
 - Namespace defaults based on service name
 - Kubernetes Deployments, Services, optional Ingress, and optional NetworkPolicy
 - ConfigMaps and Secrets for runtime configuration
@@ -70,15 +70,16 @@ Useful upstream docs:
 
 ## Quickstart
 
-Create the two kind clusters used by the platform inventory:
+Create the three kind clusters used by the platform inventory:
 
 ```bash
 make launch-clusters
 kubectl --context kind-dev get nodes
 kubectl --context kind-staging get nodes
+kubectl --context kind-cicd get nodes
 ```
 
-`make launch-clusters` creates `dev` and `staging` if they do not already exist. Then install dependencies and use the local Pulumi backend:
+`make launch-clusters` creates `dev`, `staging`, and `cicd` if they do not already exist. Then install dependencies and use the local Pulumi backend:
 
 ```bash
 make install-dev
@@ -88,11 +89,19 @@ make login
 Initialize each Pulumi stack once. If a stack already exists, skip its init command and select it instead.
 
 ```bash
+make stack-init STACK=cicd
 make stack-init STACK=dev
 make stack-init STACK=staging
 ```
 
-Each stack needs its own encrypted secret values. The checked-in nginx service declares `DUMMY_SECRET` and `DUMMY_SECRET_2`, so set both keys in each stack:
+Configure and deploy the CI/CD stack first. It owns only the Argo CD installation and its admin credentials:
+
+```bash
+make set-argocd-admin-password
+make up STACK=cicd
+```
+
+Each workload stack needs its own encrypted service secrets. The checked-in nginx service declares `DUMMY_SECRET` and `DUMMY_SECRET_2`, so set both keys in `dev` and `staging`:
 
 ```bash
 SECRET_VALUE='<dev-nginx-secret-1>' make set-secret STACK=dev SERVICE=nginx SECRET_KEY=DUMMY_SECRET
@@ -101,43 +110,11 @@ SECRET_VALUE='<staging-nginx-secret-1>' make set-secret STACK=staging SERVICE=ng
 SECRET_VALUE='<staging-nginx-secret-2>' make set-secret STACK=staging SERVICE=nginx SECRET_KEY=DUMMY_SECRET_2
 ```
 
-Deploy dev:
+Deploy the independent workload stacks after Argo CD is ready:
 
 ```bash
-make stack-select STACK=dev
-make preview-diff
-make up
-```
-
-Deploy staging:
-
-```bash
-make stack-select STACK=staging
-make preview-diff
-make up
-```
-
-The equivalent raw commands are:
-
-```bash
-kind create cluster --name dev
-kind create cluster --name staging
-uv sync
-pulumi login --local
-PULUMI_CONFIG_PASSPHRASE=local-dev-only pulumi stack init dev
-PULUMI_CONFIG_PASSPHRASE=local-dev-only pulumi stack init staging
-PULUMI_CONFIG_PASSPHRASE=local-dev-only pulumi stack select dev
-PULUMI_CONFIG_PASSPHRASE=local-dev-only pulumi config set --secret nginx:DUMMY_SECRET '<dev-nginx-secret-1>'
-PULUMI_CONFIG_PASSPHRASE=local-dev-only pulumi config set --secret nginx:DUMMY_SECRET_2 '<dev-nginx-secret-2>'
-PULUMI_CONFIG_PASSPHRASE=local-dev-only pulumi stack select staging
-PULUMI_CONFIG_PASSPHRASE=local-dev-only pulumi config set --secret nginx:DUMMY_SECRET '<staging-nginx-secret-1>'
-PULUMI_CONFIG_PASSPHRASE=local-dev-only pulumi config set --secret nginx:DUMMY_SECRET_2 '<staging-nginx-secret-2>'
-PULUMI_CONFIG_PASSPHRASE=local-dev-only pulumi stack select dev
-PULUMI_CONFIG_PASSPHRASE=local-dev-only pulumi preview --diff
-PULUMI_CONFIG_PASSPHRASE=local-dev-only pulumi up --diff --yes
-PULUMI_CONFIG_PASSPHRASE=local-dev-only pulumi stack select staging
-PULUMI_CONFIG_PASSPHRASE=local-dev-only pulumi preview --diff
-PULUMI_CONFIG_PASSPHRASE=local-dev-only pulumi up --diff --yes
+make up STACK=dev
+make up STACK=staging
 ```
 
 The Makefile sets `PULUMI_CONFIG_PASSPHRASE=local-dev-only` by default for this disposable local lab stack.
@@ -146,12 +123,16 @@ The Makefile sets `PULUMI_CONFIG_PASSPHRASE=local-dev-only` by default for this 
 
 This section is for a disposable local reset. It destroys Pulumi-managed resources, deletes the kind clusters, recreates the clusters, initializes/selects stacks, writes required secrets, and deploys again.
 
+The previous implementation stored the Argo CD installation in the `dev` Pulumi state. Do not run the new `cicd` stack on top of that state: destroy the old workload stacks first, then recreate all three stacks as shown below. Skip commands for stacks that do not exist yet.
+
 If the kind clusters still exist, destroy the Pulumi resources first:
 
 ```bash
 make stack-select STACK=staging
 make destroy
 make stack-select STACK=dev
+make destroy
+make stack-select STACK=cicd
 make destroy
 ```
 
@@ -160,6 +141,7 @@ Then delete the kind clusters:
 ```bash
 kind delete cluster --name staging
 kind delete cluster --name dev
+kind delete cluster --name cicd
 ```
 
 If you already deleted the kind clusters before running `pulumi destroy`, the Pulumi stacks may still contain state for resources that no longer exist. For this disposable lab, remove and recreate the stacks:
@@ -167,6 +149,7 @@ If you already deleted the kind clusters before running `pulumi destroy`, the Pu
 ```bash
 make stack-rm STACK=staging
 make stack-rm STACK=dev
+make stack-rm STACK=cicd
 ```
 
 Create the clusters again:
@@ -175,6 +158,7 @@ Create the clusters again:
 make launch-clusters
 kubectl --context kind-dev get nodes
 kubectl --context kind-staging get nodes
+kubectl --context kind-cicd get nodes
 ```
 
 Install dependencies and use the local Pulumi backend:
@@ -187,8 +171,16 @@ make login
 Initialize the stacks if you removed them, or select them if they already exist:
 
 ```bash
+make stack-init STACK=cicd
 make stack-init STACK=dev
 make stack-init STACK=staging
+```
+
+Set the Argo CD admin password and deploy the CI/CD stack first:
+
+```bash
+make set-argocd-admin-password
+make up STACK=cicd
 ```
 
 Set the required nginx secrets in both stacks:
@@ -200,20 +192,11 @@ SECRET_VALUE='<staging-nginx-secret-1>' make set-secret STACK=staging SERVICE=ng
 SECRET_VALUE='<staging-nginx-secret-2>' make set-secret STACK=staging SERVICE=nginx SECRET_KEY=DUMMY_SECRET_2
 ```
 
-Deploy dev:
+Deploy each workload stack independently:
 
 ```bash
-make stack-select STACK=dev
-make preview-diff
-make up
-```
-
-Deploy staging:
-
-```bash
-make stack-select STACK=staging
-make preview-diff
-make up
+make up STACK=dev
+make up STACK=staging
 ```
 
 ## Inspect the deployment
@@ -272,76 +255,97 @@ Clusters are platform-owned in `paas_platform/clusters.py`. A service selects cl
 | `staging` | `kind-staging` | `staging` |
 | `cicd` | `kind-cicd` | `platform` |
 
-### Per-cluster Argo CD
+### Separate CI/CD and workload stacks
 
-Argo CD is a platform service declared under `paas/argocd`, not a developer service under `services/`. Enable it for one cluster in `paas_platform/clusters.py`:
+Argo CD is a platform service declared under `paas/argocd`, not a developer service under `services/`. The `cicd` stack owns the Argo CD Helm release and admin credentials. Each workload stack owns only its registration, root Application, namespaces, and secret prerequisites.
 
 ```python
+"cicd": {
+    "name": "cicd",
+    "context": "kind-cicd",
+    "environment": "platform",
+    "paas": {
+        "argocd": {
+            "enabled": True,
+            "namespace": "argocd",
+            "adminPassword": {
+                "configNamespace": "argocd",
+                "hashConfigKey": "ADMIN_PASSWORD_BCRYPT",
+                "mtimeConfigKey": "ADMIN_PASSWORD_MTIME",
+            },
+            "repository": {
+                "url": "https://github.com/example/platform.git",
+                "targetRevision": "main",
+            },
+        },
+    },
+},
 "dev": {
     "name": "dev",
     "context": "kind-dev",
     "environment": "dev",
-    "paas": {
-        "argocd": {
-            "enabled": True,
-            "managementCluster": "cicd",
-            "namespace": "argocd",
-            "destination": {
-                "name": "dev",
-                "server": "https://dev-control-plane:6443",
-                "clusterRoleName": "cluster-admin",
-            },
+    "gitops": {
+        "enabled": True,
+        "cicdCluster": "cicd",
+        "destination": {
+            "name": "dev",
+            "server": "https://dev-control-plane:6443",
+            "clusterRoleName": "cluster-admin",
         },
+        "registryPath": "gitops/clusters/dev/registry",
     },
 }
 ```
 
-Set `enabled` to `False`, or omit the component from that cluster's `paas` map, to leave it uninstalled. `managementCluster` selects where Argo CD itself runs; `destination` selects the workload cluster. Omitting both preserves the same-cluster behavior. PaaS outputs are exported under `paas`, independently from application outputs under `services`.
-
-For the checked-in `dev` configuration, the topology is:
+Set `gitops.enabled` to `False`, or omit `gitops`, to deploy that environment's services directly with Pulumi. The ownership boundary is:
 
 ```text
-kind-cicd
-└── Argo CD / registry
-    └── registered destination: dev
-        └── workloads in kind-dev
+cicd stack
+└── kind-cicd: Argo CD Helm release and admin password
+
+dev stack
+├── kind-dev: service prerequisites and argocd-manager access
+└── kind-cicd: dev registration and registry-dev Application
+
+staging stack
+├── kind-staging: service prerequisites and argocd-manager access
+└── kind-cicd: staging registration and registry-staging Application
 ```
 
-Create all three local clusters with `make launch-clusters`, or create only the management cluster with `make cluster-cicd`. The registration uses the Kind-internal API endpoint because a host kubeconfig endpoint such as `127.0.0.1:<port>` is unreachable from Argo CD pods.
+Deploy `cicd` before the workload stacks because they create Argo CD custom resources in `kind-cicd`. The registration uses the Kind-internal API endpoint because a host kubeconfig endpoint such as `127.0.0.1:<port>` is unreachable from Argo CD pods.
 
-When Argo CD is enabled, Pulumi installs Argo CD and creates one root `Application` named `registry`. Pulumi no longer deploys application Deployments, Services, Ingresses, or NetworkPolicies for that cluster. The `registry` application reads `gitops/clusters/<cluster>/registry` and creates one child Argo CD application per service:
+Root Applications need unique names because they coexist in the same `argocd` namespace. `registry-dev` reads `gitops/clusters/dev/registry`; `registry-staging` reads `gitops/clusters/staging/registry`. Their child Applications deploy to the corresponding registered cluster.
 
-```text
-registry
-├── api
-├── chaos
-├── nginx
-└── worker
-```
-
-Container applications use the shared chart in `gitops/charts/service`. Helm-based applications can point directly to their external chart repository. The committed GitOps files are the desired state that Argo CD reconciles, so they must be pushed to the configured revision before the cluster can sync them.
-
-Developers do not write child Application YAML manually. Continue adding or changing `services/<name>/service.json` and `services/<name>/<cluster>.json`, then regenerate the derived registry:
+Developers do not write child Application YAML manually. Continue adding or changing `services/<name>/service.json` and `services/<name>/<cluster>.json`, then regenerate the derived registries:
 
 ```bash
 make generate-gitops STACK=dev
+make generate-gitops STACK=staging
 ```
 
-`make check-gitops` and the pre-commit hook fail when the committed child applications no longer match the service declarations. Adding a service therefore requires its normal declaration and overlay plus the generated files from the command above, without duplicating configuration by hand.
+`make check-gitops` and the pre-commit hook fail when committed child Applications no longer match the service declarations. Pulumi creates only namespaces and Secrets required by GitOps workloads; Argo CD owns the workloads themselves.
 
-Secrets are deliberately excluded from Git. Pulumi continues to create only the namespaces and Secrets required by GitOps workloads in the workload cluster, while Argo CD owns the workloads themselves.
+Each workload stack creates an `argocd-manager` service account and token in its workload cluster and an encrypted Argo CD cluster Secret in the CI/CD cluster. This playground binds `cluster-admin`; production installations should set `destination.clusterRoleName` to a constrained role.
 
-Pulumi registers the workload cluster declaratively. It creates an `argocd-manager` service account and token in the workload cluster and an encrypted Argo CD cluster Secret in the management cluster. This playground binds `cluster-admin` because example Helm charts can create cluster-scoped resources. Production installations should set `destination.clusterRoleName` to a constrained role appropriate for their workloads.
+#### Initial Argo CD admin password
+
+The password belongs only to the `cicd` Pulumi stack:
+
+```bash
+make set-argocd-admin-password
+make up STACK=cicd
+```
+
+The command prompts without echoing the password, creates a salted bcrypt hash locally, and stores that hash under `argocd:ADMIN_PASSWORD_BCRYPT` as an encrypted Pulumi secret. The plaintext password is not written to the stack, shell history, or Git. For automation, it can instead read `ARGOCD_ADMIN_PASSWORD` from the environment. It also records `argocd:ADMIN_PASSWORD_MTIME`. Run the same command again with a new password, followed by `make up STACK=cicd`, to rotate it. The login username remains `admin`.
 
 #### Public and private Git repositories
 
-A public repository needs only its URL, revision, and registry path:
+A public repository is configured once under `cicd.paas.argocd`; each workload's `gitops.registryPath` selects its own app-of-apps directory:
 
 ```python
 "repository": {
     "url": "https://github.com/example/platform.git",
     "targetRevision": "main",
-    "registryPath": "gitops/clusters/dev/registry",
 }
 ```
 
@@ -351,7 +355,6 @@ For a private HTTPS or SSH repository, add a credential mapping. The values belo
 "repository": {
     "url": "https://git.example.com/platform/repository.git",
     "targetRevision": "main",
-    "registryPath": "gitops/clusters/dev/registry",
     "credentials": {
         "secretName": "registry-repository",
         "configNamespace": "argocd",
@@ -363,20 +366,20 @@ For a private HTTPS or SSH repository, add a credential mapping. The values belo
 }
 ```
 
-Store those values encrypted in the matching Pulumi stack:
+Store those values encrypted in the `cicd` Pulumi stack:
 
 ```bash
-pulumi config set --secret argocd:GIT_USERNAME <username>
-pulumi config set --secret argocd:GIT_PASSWORD <token-or-password>
+pulumi config set --stack cicd --secret argocd:GIT_USERNAME <username>
+pulumi config set --stack cicd --secret argocd:GIT_PASSWORD <token-or-password>
 # SSH alternative:
-pulumi config set --secret argocd:GIT_SSH_KEY <private-key-value>
+pulumi config set --stack cicd --secret argocd:GIT_SSH_KEY <private-key-value>
 ```
 
 Pulumi creates the correctly labelled Argo CD repository Secret in the `argocd` namespace. No repository credential is written into cluster inventory or GitOps manifests.
 
 ### Service declarations
 
-`services/__init__.py` auto-discovers shared service declarations from `services/*/service.json` and combines them with the overlay file matching the selected Pulumi stack. On Argo-enabled targets, the generator turns those declarations into child Applications; targets without Argo CD continue to deploy through `paas_platform.deploy_service`.
+`services/__init__.py` auto-discovers shared service declarations from `services/*/service.json` and combines them with the overlay file matching the selected Pulumi stack. On GitOps-enabled workload stacks, the generator turns those declarations into child Applications; targets without GitOps continue to deploy through `paas_platform.deploy_service`.
 
 Each shared declaration starts with a service name and image:
 
@@ -752,6 +755,7 @@ The GitHub Actions workflow in `.github/workflows/logic-tests.yml` checks that g
 | `make stack-select STACK=dev` | Select the Pulumi stack whose overlay files should deploy. |
 | `make stack-rm STACK=dev` | Remove a disposable local Pulumi stack. |
 | `make set-secret STACK=dev SERVICE=nginx SECRET_KEY=DUMMY_SECRET` | Set one encrypted Pulumi secret from `SECRET_VALUE`. |
+| `make set-argocd-admin-password` | Prompt for the admin password and store its hash in `CICD_STACK`, default `cicd`. |
 | `make preview-diff` | Run `pulumi preview --diff`. |
 | `make up` | Apply changes with `pulumi up --diff --yes`. |
 | `make destroy` | Destroy stack resources with `pulumi destroy --diff`. |
@@ -778,6 +782,7 @@ export PULUMI_CONFIG_PASSPHRASE=local-dev-only
 Initialize the stack once if it does not already exist:
 
 ```bash
+make stack-init STACK=cicd
 make stack-init STACK=dev
 make stack-init STACK=staging
 ```

@@ -3,38 +3,51 @@ CLUSTERS = {
         "name": "dev",
         "context": "kind-dev",
         "environment": "dev",
-        "paas": {
-            "argocd": {
-                "enabled": True,
-                "managementCluster": "cicd",
-                "namespace": "argocd",
-                "destination": {
-                    "name": "dev",
-                    "server": "https://dev-control-plane:6443",
-                    "clusterRoleName": "cluster-admin",
-                },
-                "repository": {
-                    "url": "https://github.com/filipegalo/pulumi_playground_k8s.git",
-                    "targetRevision": "master",
-                    "registryPath": "gitops/clusters/dev/registry",
-                },
+        "gitops": {
+            "enabled": True,
+            "cicdCluster": "cicd",
+            "destination": {
+                "name": "dev",
+                "server": "https://dev-control-plane:6443",
+                "clusterRoleName": "cluster-admin",
             },
+            "registryPath": "gitops/clusters/dev/registry",
         },
     },
     "staging": {
         "name": "staging",
         "context": "kind-staging",
         "environment": "staging",
-        "paas": {
-            "argocd": {
-                "enabled": False,
+        "gitops": {
+            "enabled": True,
+            "cicdCluster": "cicd",
+            "destination": {
+                "name": "staging",
+                "server": "https://staging-control-plane:6443",
+                "clusterRoleName": "cluster-admin",
             },
+            "registryPath": "gitops/clusters/staging/registry",
         },
     },
     "cicd": {
         "name": "cicd",
         "context": "kind-cicd",
         "environment": "platform",
+        "paas": {
+            "argocd": {
+                "enabled": True,
+                "namespace": "argocd",
+                "adminPassword": {
+                    "configNamespace": "argocd",
+                    "hashConfigKey": "ADMIN_PASSWORD_BCRYPT",
+                    "mtimeConfigKey": "ADMIN_PASSWORD_MTIME",
+                },
+                "repository": {
+                    "url": "https://github.com/filipegalo/pulumi_playground_k8s.git",
+                    "targetRevision": "master",
+                },
+            },
+        },
     },
 }
 

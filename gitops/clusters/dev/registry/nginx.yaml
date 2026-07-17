@@ -2,7 +2,7 @@
   "apiVersion": "argoproj.io/v1alpha1",
   "kind": "Application",
   "metadata": {
-    "name": "nginx",
+    "name": "nginx-dev",
     "namespace": "argocd",
     "labels": {
       "app.kubernetes.io/part-of": "registry"

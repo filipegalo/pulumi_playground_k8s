@@ -14,11 +14,14 @@ def is_argocd_enabled(cluster_name: str) -> bool:
     return cluster.get("paas", {}).get("argocd", {}).get("enabled", False)
 
 
+def is_gitops_enabled(cluster_name: str) -> bool:
+    cluster = CLUSTERS.get(cluster_name, {})
+    return cluster.get("gitops", {}).get("enabled", False)
+
+
 def destination_config(cluster_name: str) -> dict[str, Any]:
-    config = CLUSTERS[cluster_name]["paas"]["argocd"]
-    destination = config.get("destination", {"server": "https://kubernetes.default.svc"})
-    if destination.get("server") == "https://kubernetes.default.svc":
-        return destination
+    config = CLUSTERS[cluster_name]["gitops"]
+    destination = config.get("destination", {})
     required = ("name", "server", "clusterRoleName")
     missing = [key for key in required if not destination.get(key)]
     if missing:
@@ -29,75 +32,161 @@ def destination_config(cluster_name: str) -> dict[str, Any]:
     return destination
 
 
+def repository_config(cluster_name: str) -> dict[str, Any]:
+    gitops = CLUSTERS[cluster_name]["gitops"]
+    cicd_cluster_name = gitops.get("cicdCluster", "cicd")
+    repository = CLUSTERS[cicd_cluster_name]["paas"]["argocd"]["repository"]
+    return {
+        **repository,
+        "registryPath": gitops["registryPath"],
+    }
+
+
+def _admin_password_values(config: dict[str, Any]) -> dict[str, Any]:
+    password_config = config.get("adminPassword")
+    if not password_config:
+        return {}
+
+    pulumi_config = pulumi.Config(
+        password_config.get("configNamespace", "argocd")
+    )
+    return {
+        "configs": {
+            "secret": {
+                "argocdServerAdminPassword": pulumi_config.require_secret(
+                    password_config.get(
+                        "hashConfigKey", "ADMIN_PASSWORD_BCRYPT"
+                    )
+                ),
+                "argocdServerAdminPasswordMtime": pulumi_config.require(
+                    password_config.get(
+                        "mtimeConfigKey", "ADMIN_PASSWORD_MTIME"
+                    )
+                ),
+            }
+        }
+    }
+
+
+def _argocd_helm_config(config: dict[str, Any]) -> dict[str, Any]:
+    configured_helm = config.get("helm", {})
+    values = dict(configured_helm.get("values", {}))
+    admin_values = _admin_password_values(config)
+    if admin_values:
+        configured_configs = dict(values.get("configs", {}))
+        configured_secret = dict(configured_configs.get("secret", {}))
+        configured_configs = {
+            **configured_configs,
+            "secret": {
+                **configured_secret,
+                **admin_values["configs"]["secret"],
+            },
+        }
+        values = {**values, "configs": configured_configs}
+
+    return {
+        "chart": "argo-cd",
+        "repository": "https://argoproj.github.io/argo-helm/",
+        "releaseName": "argocd",
+        **configured_helm,
+        "values": values,
+    }
+
+
 def deploy_argocd(cluster_name: str) -> dict[str, Any]:
     if cluster_name not in CLUSTERS:
         raise ValueError(f"Unknown cluster target: {cluster_name}")
     if not is_argocd_enabled(cluster_name):
         return {}
 
-    workload_cluster = CLUSTERS[cluster_name]
-    config = workload_cluster["paas"]["argocd"]
-    management_cluster_name = config.get("managementCluster", cluster_name)
-    if management_cluster_name not in CLUSTERS:
-        raise ValueError(f"Unknown Argo CD management cluster: {management_cluster_name}")
-    management_cluster = CLUSTERS[management_cluster_name]
+    management_cluster = CLUSTERS[cluster_name]
+    config = management_cluster["paas"]["argocd"]
     namespace_name = config.get("namespace", "argocd")
     resource_names = config.get("resourceNames", {})
     provider = create_provider(
         "argocd",
-        management_cluster_name,
+        cluster_name,
         management_cluster["context"],
         resource_names,
     )
     namespace = create_namespace(
         "argocd",
-        management_cluster_name,
+        cluster_name,
         namespace_name,
         management_cluster["environment"],
         provider,
         resource_names,
     )
     repository_secret = _create_repository_secret(
-        cluster_name, namespace, provider, config["repository"]
+        cluster_name,
+        namespace.metadata["name"],
+        provider,
+        config["repository"],
     )
     release = create_helm_release(
         "argocd",
-        management_cluster_name,
+        cluster_name,
         namespace,
         provider,
-        {
-            "chart": "argo-cd",
-            "repository": "https://argoproj.github.io/argo-helm/",
-            "releaseName": "argocd",
-            **config.get("helm", {}),
-        },
+        _argocd_helm_config(config),
         resource_names,
+    )
+    return {
+        "cluster": cluster_name,
+        "namespace": namespace.metadata["name"],
+        "helmRelease": release.name,
+        "repositorySecret": (
+            repository_secret.metadata["name"] if repository_secret else None
+        ),
+    }
+
+
+def deploy_argocd_workload(cluster_name: str) -> dict[str, Any]:
+    if cluster_name not in CLUSTERS:
+        raise ValueError(f"Unknown cluster target: {cluster_name}")
+    if not is_gitops_enabled(cluster_name):
+        return {}
+
+    workload_cluster = CLUSTERS[cluster_name]
+    config = workload_cluster["gitops"]
+    cicd_cluster_name = config.get("cicdCluster", "cicd")
+    if cicd_cluster_name not in CLUSTERS:
+        raise ValueError(f"Unknown CI/CD cluster: {cicd_cluster_name}")
+    if not is_argocd_enabled(cicd_cluster_name):
+        raise ValueError(f"Argo CD is not enabled on CI/CD cluster: {cicd_cluster_name}")
+
+    cicd_cluster = CLUSTERS[cicd_cluster_name]
+    argocd_config = cicd_cluster["paas"]["argocd"]
+    namespace_name = argocd_config.get("namespace", "argocd")
+    provider = create_provider(
+        "argocd",
+        cicd_cluster_name,
+        cicd_cluster["context"],
+        config.get("resourceNames", {}),
     )
     destination = destination_config(cluster_name)
     cluster_secret = _register_workload_cluster(
         cluster_name,
         workload_cluster,
         destination,
-        namespace,
+        namespace_name,
         provider,
-        release,
     )
     registry = _create_registry_application(
         cluster_name,
-        management_cluster_name,
-        namespace,
+        cicd_cluster_name,
+        namespace_name,
         provider,
-        config["repository"],
-        release,
-        repository_secret,
+        {
+            **config,
+            "repository": repository_config(cluster_name),
+        },
         cluster_secret,
     )
     return {
         "cluster": cluster_name,
-        "managementCluster": management_cluster_name,
+        "cicdCluster": cicd_cluster_name,
         "destination": destination,
-        "namespace": namespace.metadata["name"],
-        "helmRelease": release.name,
         "registryApplication": registry.metadata["name"],
     }
 
@@ -105,14 +194,10 @@ def deploy_argocd(cluster_name: str) -> dict[str, Any]:
 def _register_workload_cluster(
     cluster_name: str,
     workload_cluster: dict[str, Any],
-    destination: dict[str, Any] | None,
-    argocd_namespace: k8s.core.v1.Namespace,
+    destination: dict[str, Any],
+    argocd_namespace: Any,
     management_provider: k8s.Provider,
-    release: k8s.helm.v3.Release,
-) -> k8s.core.v1.Secret | None:
-    if not destination or destination.get("server") == "https://kubernetes.default.svc":
-        return None
-
+) -> k8s.core.v1.Secret:
     workload_provider = create_provider(
         "argocd-workload",
         cluster_name,
@@ -167,7 +252,7 @@ def _register_workload_cluster(
         f"argocd-{cluster_name}-cluster-secret",
         metadata={
             "name": f"cluster-{cluster_name}",
-            "namespace": argocd_namespace.metadata["name"],
+            "namespace": argocd_namespace,
             "labels": {"argocd.argoproj.io/secret-type": "cluster"},
         },
         string_data={
@@ -178,7 +263,7 @@ def _register_workload_cluster(
         type="Opaque",
         opts=pulumi.ResourceOptions(
             provider=management_provider,
-            depends_on=[argocd_namespace, release, token_secret],
+            depends_on=[token_secret],
         ),
     )
 
@@ -197,7 +282,7 @@ def _registration_config(data: dict[str, str]) -> str:
 
 def _create_repository_secret(
     cluster_name: str,
-    namespace: k8s.core.v1.Namespace,
+    namespace: Any,
     provider: k8s.Provider,
     repository: dict[str, Any],
 ) -> k8s.core.v1.Secret | None:
@@ -221,38 +306,32 @@ def _create_repository_secret(
         f"argocd-{cluster_name}-repository-secret",
         metadata={
             "name": credentials.get("secretName", "registry-repository"),
-            "namespace": namespace.metadata["name"],
+            "namespace": namespace,
             "labels": {"argocd.argoproj.io/secret-type": "repository"},
         },
         string_data=string_data,
         type="Opaque",
-        opts=pulumi.ResourceOptions(provider=provider, depends_on=[namespace]),
+        opts=pulumi.ResourceOptions(provider=provider),
     )
 
 
 def _create_registry_application(
     cluster_name: str,
     management_cluster_name: str,
-    namespace: k8s.core.v1.Namespace,
+    namespace: Any,
     provider: k8s.Provider,
-    repository: dict[str, Any],
-    release: k8s.helm.v3.Release,
-    repository_secret: k8s.core.v1.Secret | None,
-    cluster_secret: k8s.core.v1.Secret | None,
+    config: dict[str, Any],
+    cluster_secret: k8s.core.v1.Secret,
 ) -> k8s.apiextensions.CustomResource:
-    dependencies = [release]
-    if repository_secret is not None:
-        dependencies.append(repository_secret)
-    if cluster_secret is not None:
-        dependencies.append(cluster_secret)
+    repository = config["repository"]
 
     return k8s.apiextensions.CustomResource(
         f"registry-{cluster_name}-{management_cluster_name}-application",
         api_version="argoproj.io/v1alpha1",
         kind="Application",
         metadata={
-            "name": "registry",
-            "namespace": namespace.metadata["name"],
+            "name": config.get("registryApplicationName", f"registry-{cluster_name}"),
+            "namespace": namespace,
             "finalizers": ["resources-finalizer.argocd.argoproj.io"],
         },
         spec={
@@ -264,15 +343,22 @@ def _create_registry_application(
             },
             "destination": {
                 "server": "https://kubernetes.default.svc",
-                "namespace": namespace.metadata["name"],
+                "namespace": namespace,
             },
             "syncPolicy": {
                 "automated": {"prune": True, "selfHeal": True},
                 "syncOptions": ["CreateNamespace=true"],
             },
         },
-        opts=pulumi.ResourceOptions(provider=provider, depends_on=dependencies),
+        opts=pulumi.ResourceOptions(provider=provider, depends_on=[cluster_secret]),
     )
 
 
-__all__ = ["deploy_argocd", "destination_config", "is_argocd_enabled"]
+__all__ = [
+    "deploy_argocd",
+    "deploy_argocd_workload",
+    "destination_config",
+    "is_argocd_enabled",
+    "is_gitops_enabled",
+    "repository_config",
+]
