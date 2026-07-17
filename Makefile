@@ -142,7 +142,7 @@ stack-rm:
 	$(PULUMI) stack rm $(STACK)
 
 compile:
-	$(PYTHON) -m py_compile __main__.py paas/*.py paas/argocd/__init__.py paas_platform/*.py scripts/*.py services/__init__.py
+	$(PYTHON) -m py_compile __main__.py paas/*.py paas/argocd/__init__.py paas/ingress/__init__.py paas_platform/*.py scripts/*.py services/__init__.py
 
 test:
 	$(PYTEST) -q

@@ -23,6 +23,7 @@ from paas.argocd import (
     is_gitops_enabled,
 )
 from paas.gitops import deploy_gitops_prerequisites
+from paas.ingress import deploy_ingress_controller, is_ingress_enabled
 from paas_platform.defaults import service_config
 from paas_platform.resources import _repository_opts
 from paas_platform.service import (
@@ -147,6 +148,8 @@ def test_generated_registry_matches_service_declarations():
     ]
     assert api["spec"]["destination"] == {"name": "dev", "namespace": "api"}
     api_values = json.loads(api["spec"]["source"]["helm"]["values"])
+    assert api_values["ingress"]["className"] == "traefik"
+    assert api_values["ingress"]["annotations"] == {}
     assert api_values["service"]["ports"] == [
         {"name": "http", "port": 8080, "targetPort": 80}
     ]
@@ -169,7 +172,7 @@ def test_argocd_is_enabled_per_cluster_as_a_paas_service():
     staging_paas = load_paas_services("staging")
     cicd_paas = load_paas_services("cicd")
 
-    assert dev_paas == []
+    assert [service["name"] for service in dev_paas] == ["ingress"]
     assert staging_paas == []
     assert [service["name"] for service in cicd_paas] == ["argocd"]
     assert cicd_paas[0]["type"] == "helm"
@@ -193,6 +196,62 @@ def test_argocd_is_enabled_per_cluster_as_a_paas_service():
         "repository": "https://argoproj.github.io/argo-helm/",
         "releaseName": "argocd",
     }
+
+
+@pulumi.runtime.test
+def test_ingress_controller_is_an_optional_workload_paas_service():
+    assert is_ingress_enabled("dev") is True
+    assert is_ingress_enabled("staging") is False
+    assert is_ingress_enabled("missing") is False
+    assert load_paas_services("staging") == []
+    assert [service["name"] for service in load_paas_services("dev")] == [
+        "ingress"
+    ]
+    assert deploy_ingress_controller("staging") == {}
+    with pytest.raises(ValueError, match="Unknown cluster target: missing"):
+        deploy_ingress_controller("missing")
+
+    output = deploy_ingress_controller("dev")
+
+    def check_output(args: list[Any]) -> None:
+        namespace, release = args
+        assert namespace == "traefik"
+        assert release == "traefik"
+        releases = [
+            resource
+            for resource in mocks.resources
+            if resource["name"] == "ingress-dev-helm-release"
+        ]
+        assert len(releases) == 1
+        assert releases[0]["inputs"]["chart"] == "traefik"
+        assert releases[0]["inputs"]["version"] == "40.2.0"
+        assert releases[0]["inputs"]["repositoryOpts"]["repo"] == (
+            "https://traefik.github.io/charts"
+        )
+        assert releases[0]["inputs"]["values"] == {
+            "providers": {
+                "kubernetesCRD": {"enabled": False},
+                "kubernetesGateway": {"enabled": False},
+                "kubernetesIngress": {
+                    "enabled": True,
+                    "ingressClass": "traefik",
+                    "publishedService": {"enabled": False},
+                    "ingressEndpoint": {"ip": "127.0.0.1"},
+                },
+            },
+            "gateway": {"enabled": False},
+            "ingressClass": {
+                "enabled": True,
+                "isDefaultClass": False,
+                "name": "traefik",
+            },
+            "service": {"spec": {"type": "NodePort"}},
+        }
+
+    return pulumi.Output.all(
+        output["namespace"],
+        output["helmRelease"],
+    ).apply(check_output)
 
 
 def test_loading_paas_for_an_unknown_cluster_raises_clear_error():

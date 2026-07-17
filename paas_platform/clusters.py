@@ -3,6 +3,33 @@ CLUSTERS = {
         "name": "dev",
         "context": "kind-dev",
         "environment": "dev",
+        "paas": {
+            "ingress": {
+                "enabled": True,
+                "namespace": "traefik",
+                "helm": {
+                    "values": {
+                        "providers": {
+                            "kubernetesCRD": {"enabled": False},
+                            "kubernetesGateway": {"enabled": False},
+                            "kubernetesIngress": {
+                                "enabled": True,
+                                "ingressClass": "traefik",
+                                "publishedService": {"enabled": False},
+                                "ingressEndpoint": {"ip": "127.0.0.1"},
+                            },
+                        },
+                        "gateway": {"enabled": False},
+                        "ingressClass": {
+                            "enabled": True,
+                            "isDefaultClass": False,
+                            "name": "traefik",
+                        },
+                        "service": {"spec": {"type": "NodePort"}},
+                    },
+                },
+            },
+        },
         "gitops": {
             "enabled": True,
             "cicdCluster": "cicd",
@@ -18,6 +45,11 @@ CLUSTERS = {
         "name": "staging",
         "context": "kind-staging",
         "environment": "staging",
+        "paas": {
+            "ingress": {
+                "enabled": False,
+            },
+        },
         "gitops": {
             "enabled": True,
             "cicdCluster": "cicd",

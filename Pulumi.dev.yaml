@@ -1,6 +1,6 @@
-encryptionsalt: v1:ZX6mQiE9c1E=:v1:v6QACqLrqynchUPE:KSS1Lx/37JJAmnSs2mfRWKq/4svH8g==
+encryptionsalt: v1:/pA1JsDwre4=:v1:JcF7LtGC4g4Y3MHl:SPdRwDCdggpCSurUMZAg4LmoLl0e0g==
 config:
   nginx:DUMMY_SECRET:
-    secure: v1:1C3xkCbllNJ76R1u:ZLqkctCw1JF2Nne4gm9nIIkwSSvbLCCBx3COaw==
+    secure: v1:LF0/3tLZ2YIh54AX:+BDp6KcHQW/RYT4gKoL47dr5LV36ya50pA+L9gjn
   nginx:DUMMY_SECRET_2:
-    secure: v1:Clunjg4S1psiuPq6:JuUkx55EbhPqDyB2StlIMAxH2GBHHPSuK6rYgQ==
+    secure: v1:lyQezJVrpwn/9nYG:lBcPgOifHTWeK/YjRthTfjBCmwSAcUfFfqqdaKA6

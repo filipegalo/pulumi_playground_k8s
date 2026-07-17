@@ -304,11 +304,11 @@ cicd stack
 └── kind-cicd: Argo CD Helm release and admin password
 
 dev stack
-├── kind-dev: service prerequisites and argocd-manager access
+├── kind-dev: optional PaaS, service prerequisites, and argocd-manager access
 └── kind-cicd: dev registration and registry-dev Application
 
 staging stack
-├── kind-staging: service prerequisites and argocd-manager access
+├── kind-staging: optional PaaS, service prerequisites, and argocd-manager access
 └── kind-cicd: staging registration and registry-staging Application
 ```
 
@@ -326,6 +326,47 @@ make generate-gitops STACK=staging
 `make check-gitops` and the pre-commit hook fail when committed child Applications no longer match the service declarations. Pulumi creates only namespaces and Secrets required by GitOps workloads; Argo CD owns the workloads themselves.
 
 Each workload stack creates an `argocd-manager` service account and token in its workload cluster and an encrypted Argo CD cluster Secret in the CI/CD cluster. This playground binds `cluster-admin`; production installations should set `destination.clusterRoleName` to a constrained role.
+
+#### Optional ingress controller
+
+The ingress controller is another PaaS component under `paas/ingress`, outside developer-owned `services/`. It uses the maintained Traefik Helm chart. Enable or disable it independently for each workload cluster:
+
+```python
+"paas": {
+    "ingress": {
+        "enabled": True,
+        "namespace": "traefik",
+        "helm": {
+            "values": {
+                "providers": {
+                    "kubernetesIngress": {
+                        "enabled": True,
+                        "ingressClass": "traefik",
+                        "publishedService": {"enabled": False},
+                        "ingressEndpoint": {"ip": "127.0.0.1"},
+                    },
+                },
+                "service": {"spec": {"type": "NodePort"}},
+            },
+        },
+    },
+}
+```
+
+The checked-in inventory enables it for `dev` and disables it for `staging`. Change `enabled` and apply the corresponding workload stack:
+
+```bash
+make up STACK=dev
+```
+
+Application Ingresses explicitly use `className: traefik`. For this Kind playground, Traefik publishes `127.0.0.1` into Ingress status so Argo CD can evaluate the resource as healthy. NodePort does not automatically expose the service through Docker Desktop; use port forwarding for local access:
+
+```bash
+kubectl --context kind-dev -n traefik port-forward service/traefik 8080:80
+curl -H 'Host: api.localhost' http://127.0.0.1:8080/
+```
+
+Ingress NGINX is intentionally not used because Kubernetes retired it in March 2026 and it no longer receives security fixes.
 
 #### Initial Argo CD admin password
 
@@ -615,16 +656,14 @@ Ingress is disabled by default:
   "ingress": {
     "enabled": true,
     "host": "api.localhost",
-    "annotations": {
-      "pulumi.com/skipAwait": "true"
-    }
+    "className": "traefik"
   }
 }
 ```
 
 The platform also supports `className`, `path`, `pathType`, and `servicePort`. Ingress requires the Kubernetes Service to be enabled.
 
-The checked-in API example declares `api.localhost`, but local Ingress only works if your kind cluster has an ingress controller installed and configured.
+The checked-in API example declares `api.localhost` and selects the optional Traefik PaaS controller configured for `dev`.
 
 ### Readiness probe
 
@@ -842,9 +881,20 @@ pulumi cancel
 
 ### Ingress does not work locally
 
-The `api.localhost` Ingress declaration only creates Kubernetes Ingress resources. A local kind cluster still needs an ingress controller, and Pulumi may need `pulumi.com/skipAwait` for local controller behavior.
+Confirm that the controller is enabled for the workload cluster and that its pods, IngressClass, and application Ingress are ready:
 
-For a quick local check, use `make port-forward` instead of Ingress.
+```bash
+kubectl --context kind-dev -n traefik get pods
+kubectl --context kind-dev get ingressclass traefik
+kubectl --context kind-dev -n api get ingress api
+```
+
+Kind does not automatically expose the Traefik NodePort through Docker Desktop. Forward the controller Service and send the configured host header:
+
+```bash
+kubectl --context kind-dev -n traefik port-forward service/traefik 8080:80
+curl -H 'Host: api.localhost' http://127.0.0.1:8080/
+```
 
 ### Secret value missing
 

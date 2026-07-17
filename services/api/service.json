@@ -14,8 +14,6 @@
   "ingress": {
     "enabled": true,
     "host": "api.localhost",
-    "annotations": {
-      "pulumi.com/skipAwait": "true"
-    }
+    "className": "traefik"
   }
 }

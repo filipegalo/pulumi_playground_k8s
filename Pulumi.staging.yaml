@@ -1,0 +1,6 @@
+encryptionsalt: v1:FMlHDJK6BgA=:v1:swXX7gq6kerk3JcM:SN/rz/994wS2QN1rwVAn9vDsgVcn+w==
+config:
+  nginx:DUMMY_SECRET:
+    secure: v1:WfK2RV1J3SanTy6s:Zll/gcP74Xmee2cxJSb0mpHGIJqDvE667AHw4Mc8M1XOhg==
+  nginx:DUMMY_SECRET_2:
+    secure: v1:8w3/H19iZt33L+4z:K+ZFCFzm9FJGaCIomRIPIvmvkt0cmx8m5JK5z0ed0Kj2qg==

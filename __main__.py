@@ -7,6 +7,7 @@ from paas.argocd import (
     is_gitops_enabled,
 )
 from paas.gitops import deploy_gitops_prerequisites
+from paas.ingress import deploy_ingress_controller
 from paas_platform import deploy_service
 from services import load_services
 
@@ -16,6 +17,10 @@ deployed_services = {}
 for service in load_paas_services(pulumi.get_stack()):
     if service["name"] == "argocd":
         deployed_paas[service["name"]] = deploy_argocd(pulumi.get_stack())
+    if service["name"] == "ingress":
+        deployed_paas[service["name"]] = deploy_ingress_controller(
+            pulumi.get_stack()
+        )
 
 services = load_services(pulumi.get_stack())
 if is_gitops_enabled(pulumi.get_stack()):

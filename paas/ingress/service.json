@@ -1,0 +1,10 @@
+{
+  "name": "ingress",
+  "type": "helm",
+  "helm": {
+    "chart": "traefik",
+    "repository": "https://traefik.github.io/charts",
+    "releaseName": "traefik",
+    "version": "40.2.0"
+  }
+}

@@ -1,0 +1,5 @@
+encryptionsalt: v1:D6FoxGQYkKI=:v1:2j1b3f2MQEQdhIht:pzKmbgHzgJ3MAapyrJb4tjarkHj6GQ==
+config:
+  argocd:ADMIN_PASSWORD_BCRYPT:
+    secure: v1:ZXdk09tU5rpAiQgZ:cyDg7fJc6HvhCS8ID/pjM0VPDWn2Sroaz9oLgFquCK8EjUeupvU4blvwkzmtCqkn7mwh1zrkwScEt9BaWE6KlUizvhXSwzNolrelUg==
+  argocd:ADMIN_PASSWORD_MTIME: "2026-07-17T22:37:27Z"
