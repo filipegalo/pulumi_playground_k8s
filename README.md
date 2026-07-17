@@ -30,6 +30,7 @@ Pulumi Playground K8s is a Pulumi + Kubernetes playground that models a tiny Paa
 
 - Auto-discovered service declarations from `services/*/service.json` plus stack-specific overlays such as `dev.json` and `staging.json`
 - Cluster targeting from a platform-owned inventory
+- Per-cluster PaaS services, including optional Argo CD
 - Namespace defaults based on service name
 - Kubernetes Deployments, Services, optional Ingress, and optional NetworkPolicy
 - ConfigMaps and Secrets for runtime configuration
@@ -43,6 +44,7 @@ Pulumi Playground K8s is a Pulumi + Kubernetes playground that models a tiny Paa
 | Path | Purpose |
 | --- | --- |
 | `paas_platform/` | Reusable PaaS deployment primitives, defaults, labels, cluster inventory, and Kubernetes resource builders. |
+| `paas/` | Platform-owned service declarations, separate from developer workloads. |
 | `services/` | Developer-owned service declarations. Shared config lives at `services/<service>/service.json`; stack overlays live next to it, such as `dev.json` and `staging.json`. |
 | `tests/` | Pulumi mock tests for platform behavior. |
 | `.github/workflows/` | CI workflow for compile and coverage checks. |
@@ -269,6 +271,26 @@ Clusters are platform-owned in `paas_platform/clusters.py`. A service selects cl
 | `dev` | `kind-dev` | `dev` |
 | `staging` | `kind-staging` | `staging` |
 
+### Per-cluster Argo CD
+
+Argo CD is a platform service declared under `paas/argocd`, not a developer service under `services/`. Enable it for one cluster in `paas_platform/clusters.py`:
+
+```python
+"dev": {
+    "name": "dev",
+    "context": "kind-dev",
+    "environment": "dev",
+    "paas": {
+        "argocd": {
+            "enabled": True,
+            "namespace": "argocd",
+        },
+    },
+}
+```
+
+Set `enabled` to `False`, or omit the component from that cluster's `paas` map, to leave it uninstalled. The selected Pulumi stack deploys only the PaaS services enabled for its matching cluster. PaaS outputs are exported under `paas`, independently from application outputs under `services`.
+
 ### Service declarations
 
 `services/__init__.py` auto-discovers shared service declarations from `services/*/service.json` and combines them with the overlay file matching the selected Pulumi stack. `__main__.py` deploys each discovered service with `paas_platform.deploy_service`.
@@ -316,7 +338,7 @@ Platform defaults live in `paas_platform/defaults.py`. They include port `80`, o
 
 | Platform-owned | Developer-owned |
 | --- | --- |
-| `paas_platform/` | `services/*/service.json` and `services/*/<stack>.json` |
+| `paas_platform/` and `paas/` | `services/*/service.json` and `services/*/<stack>.json` |
 | Cluster inventory | Service name and image |
 | Default behavior | Stack-specific service overlays |
 | Deployment logic | Service-level and stack-level overrides |

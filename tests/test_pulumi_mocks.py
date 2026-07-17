@@ -7,6 +7,8 @@ import pytest
 from pulumi.runtime import MockCallArgs, MockResourceArgs, Mocks, set_mocks
 from pulumi.runtime.config import set_all_config
 
+import paas
+from paas import load_paas_services
 from paas_platform.defaults import service_config
 from paas_platform.resources import _repository_opts
 from paas_platform.service import (
@@ -125,6 +127,41 @@ def test_load_services_uses_stack_named_target_overlays():
             },
         },
     ]
+
+
+def test_argocd_is_enabled_per_cluster_as_a_paas_service():
+    dev_paas = load_paas_services("dev")
+    staging_paas = load_paas_services("staging")
+
+    assert [service["name"] for service in dev_paas] == ["argocd"]
+    assert staging_paas == []
+    assert dev_paas[0]["type"] == "helm"
+    assert dev_paas[0]["targetClusters"] == [
+        {
+            "name": "dev",
+            "namespace": "argocd",
+        }
+    ]
+    assert dev_paas[0]["helm"] == {
+        "chart": "argo-cd",
+        "repository": "https://argoproj.github.io/argo-helm/",
+        "releaseName": "argocd",
+    }
+
+
+def test_loading_paas_for_an_unknown_cluster_raises_clear_error():
+    with pytest.raises(ValueError, match="Unknown cluster target: missing"):
+        load_paas_services("missing")
+
+
+def test_enabled_paas_service_requires_a_platform_declaration(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+):
+    monkeypatch.setattr(paas, "_PAAS_DIR", tmp_path)
+
+    with pytest.raises(ValueError, match="Unknown PaaS service: argocd"):
+        load_paas_services("dev")
 
 
 def test_disabled_target_cluster_is_skipped():

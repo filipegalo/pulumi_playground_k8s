@@ -110,16 +110,16 @@ stack-rm:
 	$(PULUMI) stack rm $(STACK)
 
 compile:
-	$(PYTHON) -m py_compile __main__.py paas_platform/*.py services/__init__.py
+	$(PYTHON) -m py_compile __main__.py paas/__init__.py paas_platform/*.py services/__init__.py
 
 test:
 	$(PYTEST) -q
 
 coverage:
-	$(PYTEST) --cov=paas_platform --cov-report=term-missing --cov-fail-under=100
+	$(PYTEST) --cov=paas --cov=paas_platform --cov-report=term-missing --cov-fail-under=100
 
 coverage-html:
-	$(PYTEST) --cov=paas_platform --cov-report=term-missing --cov-report=html --cov-fail-under=100
+	$(PYTEST) --cov=paas --cov=paas_platform --cov-report=term-missing --cov-report=html --cov-fail-under=100
 
 pre-commit-install:
 	chmod +x .githooks/pre-commit

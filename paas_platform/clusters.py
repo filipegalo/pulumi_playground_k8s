@@ -3,11 +3,22 @@ CLUSTERS = {
         "name": "dev",
         "context": "kind-dev",
         "environment": "dev",
+        "paas": {
+            "argocd": {
+                "enabled": True,
+                "namespace": "argocd",
+            },
+        },
     },
     "staging": {
         "name": "staging",
         "context": "kind-staging",
         "environment": "staging",
+        "paas": {
+            "argocd": {
+                "enabled": False,
+            },
+        },
     },
 }
 
