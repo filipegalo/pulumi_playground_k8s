@@ -124,7 +124,7 @@ set-argocd-admin-password:
 		unset ADMIN_PASSWORD; \
 		$(PULUMI) stack select $(CICD_STACK) >/dev/null; \
 		$(PULUMI) config set --secret argocd:ADMIN_PASSWORD_BCRYPT "$$ADMIN_PASSWORD_HASH"; \
-		$(PULUMI) config set argocd:ADMIN_PASSWORD_MTIME "$$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+		$(PULUMI) config set --plaintext argocd:ADMIN_PASSWORD_MTIME "$$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 preview:
 	$(PULUMI) preview $(PULUMI_STACK_ARG)
